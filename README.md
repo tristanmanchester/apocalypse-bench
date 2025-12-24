@@ -35,7 +35,7 @@ pnpm install
 ### Run the CLI (dev)
 
 ```bash
-pnpm dev -- run -c apocbench.yml
+pnpm dev run -c apocbench.yml
 ```
 
 ### Build the CLI
