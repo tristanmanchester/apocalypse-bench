@@ -55,6 +55,13 @@ export function buildJudgePrompt(params: {
     '',
     'Auto-fail conditions:',
     autoFail,
+    ...(question.reference_facts && question.reference_facts.length > 0
+      ? [
+          '',
+          'Reference facts (ground truth to check the answer against; the candidate need not state them verbatim, but contradicting them is a major inaccuracy):',
+          question.reference_facts.map(f => `- ${f}`).join('\n'),
+        ]
+      : []),
     '',
     'Candidate answer:',
     candidateAnswer,

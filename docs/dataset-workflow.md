@@ -1,32 +1,31 @@
-# Dataset workflow
+# Dataset workflow (V2)
 
 ## Source of truth
 
-- Edit questions in `data/question_bank_v8/*.md`.
-- Shared context lives in `data/question_bank_v8/info.md`.
+- The question bank is **JSON**. The 13 per-category JSONL files in `data/question_bank/*.jsonl`
+  are the single source of truth, edited directly.
+- `apocbench` loads them directly at runtime (`run.datasetPaths` in `apocbench.yml`). There is no
+  compile step and no separate markdown source.
+- Schema and authoring rules: `data/question_bank/info.md`.
 
-## Generate JSONL
+## Validate
 
-`apocbench` loads JSONL at runtime (see `run.datasetPath` / `run.datasetPaths` in `apocbench.yml`).
-
-Regenerate JSONL from markdown (split):
-
-```bash
-pnpm -s compile:dataset -- --in data/question_bank_v8 --out data/question_bank_v8_jsonl
-```
-
-## Verify sync
-
-This test fails if the checked-in JSONL drifts from the markdown:
+The V2 contract (id format, canonical categories, exactly 10 rubric items, a refusal auto-fail plus
+only technically-wrong/unsafe auto-fails, real scenarios, reference facts, `version: v2`) is enforced
+by:
 
 ```bash
-pnpm -s test -- test/dataset-sync-split.test.ts
+pnpm -s test -- test/dataset-validate.test.ts
 ```
 
-## Mini sanity check
+## Human-readable export
 
-There is a tiny markdown bank for quick verification:
+`docs/question-bank.md` is a generated, read-only rendering of the whole bank for browsing. Refresh it
+after editing the JSONL:
 
-- `data/question_bank_mini.md`
+```bash
+pnpm -s dataset:export
+```
 
-The test `test/compile-mini-dataset.test.ts` compiles it to `tmp/mini_compiled.jsonl` and ensures `loadJsonl(...)` accepts it.
+A freshness test (`test/dataset-export-fresh.test.ts`) fails if the committed markdown drifts from the
+JSONL, so regenerate and commit it together with dataset changes.

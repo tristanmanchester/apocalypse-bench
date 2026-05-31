@@ -1,11 +1,12 @@
 run:
   name: 'default'
-  # Dataset source of truth:
-  # - Edit: `data/question_bank_v8/*.md` (see `data/question_bank_v8/info.md`)
-  # - Regenerate JSONL (split): `pnpm -s compile:dataset -- --in data/question_bank_v8 --out data/question_bank_v8_jsonl`
-  # - Guardrail: `pnpm -s test -- test/dataset-sync.test.ts test/dataset-sync-split.test.ts` fails if datasets drift.
+  # Dataset source of truth (V2):
+  # - The per-category JSONL files in `data/question_bank/*.jsonl` ARE the source of truth. Edit them directly.
+  # - See `data/question_bank/info.md` for the schema and conventions.
+  # - Guardrail: `pnpm -s test -- test/dataset-validate.test.ts` enforces the V2 contract (ids, categories, 10-item rubrics, auto-fails).
+  # - Optional human-readable export: `pnpm -s dataset:export` regenerates `docs/question-bank.md` from the JSONL.
   datasetPaths:
-    - './data/question_bank_v8_jsonl'
+    - './data/question_bank'
   outDir: './runs'
   resume: true
   questionLimit: null

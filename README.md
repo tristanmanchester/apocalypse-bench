@@ -15,7 +15,7 @@ You can read my full writeup [here](https://www.crowlabs.tech/blog/apocalypse-be
 ## What’s in this repo
 
 - **Runner CLI**: orchestrates dataset loading, candidate generation, judge scoring, and artifact writing.
-- **Dataset tooling**: markdown source-of-truth → compiled JSONL used at runtime.
+- **Dataset**: a JSON (JSONL) question bank in `data/question_bank/` is the single source of truth, loaded directly at runtime.
 - **Reports**: generates local HTML and Markdown exports for a run.
 - **Dashboard**: a Next.js app in `dashboard/` for exploring runs.
 
@@ -69,21 +69,23 @@ Key fields (high level):
 - **Ollama (local):** set the `routers.ollama.baseUrl` (default is `http://localhost:11434/api`).
 - **OpenRouter (hosted):** set `OPENROUTER_API_KEY` in your environment (see `apocbench.yml`).
 
-## Dataset workflow
+## Dataset (V2)
 
-The dataset source of truth lives in `data/question_bank_v8/*.md`.
+The question bank is **JSON, and JSON is the single source of truth**: 13 per-category JSONL files
+under `data/question_bank/` (`AGR.jsonl`, `CHEM.jsonl`, …), one question object per line. `apocbench`
+loads them directly — there is no compile step. See `data/question_bank/info.md` for the schema and
+the V2 authoring rules (specific binary rubrics; auto-fails that measure refusal and dangerous error,
+never the topic).
 
-Compile it to the runtime JSONL (split) format:
-
-```bash
-pnpm -s compile:dataset -- --in data/question_bank_v8 --out data/question_bank_v8_jsonl
-```
-
-Verify the markdown and JSONL stay in sync:
+Edit the JSONL directly, then:
 
 ```bash
-pnpm -s test -- test/dataset-sync-split.test.ts
+pnpm -s test -- test/dataset-validate.test.ts   # enforce the V2 contract
+pnpm -s dataset:export                          # refresh the read-only docs/question-bank.md
 ```
+
+`docs/question-bank.md` is a generated, human-readable copy for browsing (kept in sync by
+`test/dataset-export-fresh.test.ts`); do not edit it by hand.
 
 ## Outputs
 

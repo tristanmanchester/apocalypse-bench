@@ -25,6 +25,7 @@ When you need to call tools from the shell, use this rubric:
 - Prefer deterministic, non-interactive commands (`head`, `--filter`, `--json` + `jq`) so runs are reproducible
 
 ## Dataset editing
-- Edit questions in `data/question_bank_v8/*.md` (see `data/question_bank_v8/info.md`).
-- Regenerate runtime dataset JSONL (split): `pnpm -s compile:dataset -- --in data/question_bank_v8 --out data/question_bank_v8_jsonl`.
-- `pnpm -s test -- test/dataset-sync-split.test.ts` ensures MD and JSONL stay in sync.
+- The source of truth is JSON: `data/question_bank/*.jsonl` (one question object per line). Edit it directly; the runtime loads it as-is.
+- See `data/question_bank/info.md` for the per-line schema and the V2 authoring rules.
+- `pnpm -s test -- test/dataset-validate.test.ts` enforces the contract (ids, canonical categories, 10-item rubrics, refusal+technical auto-fails).
+- `pnpm -s dataset:export` regenerates the read-only `docs/question-bank.md`; commit it alongside JSONL changes.

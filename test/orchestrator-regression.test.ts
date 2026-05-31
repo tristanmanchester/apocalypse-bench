@@ -177,7 +177,7 @@ const judgeMock = vi.mocked(judgeWithRubricCompletenessRetry);
 
 const DATASET_ABS = path.resolve(
   process.cwd(),
-  'data/question_bank_v8_jsonl/GT.jsonl',
+  'data/question_bank/PH.jsonl',
 );
 
 const RUNS_ROOT = path.resolve(process.cwd(), 'runs-test-orchestrator');
@@ -190,7 +190,7 @@ function makeConfig(params: {
   return {
     run: {
       name: 'test',
-      datasetPaths: ['./data/question_bank_v8_jsonl'],
+      datasetPaths: ['./data/question_bank'],
       outDir: params.outDir,
       resume: params.resume ?? true,
       concurrency: { candidate: 1, judge: 1 },

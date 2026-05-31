@@ -15,7 +15,7 @@ describe('integration (mocked)', () => {
     const config: ApocbenchConfig = {
       run: {
         name: 'test',
-        datasetPaths: ['./data/question_bank_v8_jsonl'],
+        datasetPaths: ['./data/question_bank'],
         outDir: tmpOut,
         resume: true,
         concurrency: { candidate: 1, judge: 1 },
@@ -76,7 +76,7 @@ describe('integration (mocked)', () => {
     };
 
     // For this integration test we use dryRun=true (no network) and validate it exits cleanly.
-    const datasetAbs = path.resolve(process.cwd(), 'data/question_bank_v8_jsonl/GT.jsonl');
+    const datasetAbs = path.resolve(process.cwd(), 'data/question_bank/PH.jsonl');
     const result = await runBenchmark({
       config,
       configPath: 'x',
