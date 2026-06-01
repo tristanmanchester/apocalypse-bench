@@ -9,6 +9,9 @@
   },
   "scripts": {
     "build": "tsup",
+    "bench:free-models": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx src/cli/index.tsx run -c apocbench-lfm2.5-deepseek.yml",
+    "bench:lfm2.5": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx src/cli/index.tsx run -c apocbench-lfm2.5-deepseek.yml",
+    "bench:model-pack": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx src/cli/index.tsx run -c apocbench-lfm2.5-deepseek.yml",
     "dataset:export": "tsx src/cli/exportDataset.ts",
     "dev": "tsx src/cli/index.tsx",
     "lint": "eslint src test",

@@ -1,0 +1,75 @@
+run:
+  name: 'lfm2.5-gemma4-deepseek-v4'
+  datasetPaths:
+    - './data/question_bank'
+  outDir: './runs'
+  resume: true
+  questionLimit: null
+  categories: null
+  maxBudgetUsd: null
+  concurrency:
+    candidate: 2
+    judge: 2
+
+candidate:
+  maxTokens: 4000
+
+judge:
+  router: 'openrouter'
+  model: 'deepseek/deepseek-v4-flash'
+  temperature: null
+  maxTokens: 4096
+  structured: true
+  reasoning: true
+
+routers:
+  ollama:
+    baseUrl: 'http://localhost:11434/api'
+    apiKeyEnv: null
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 120000
+
+  openrouter:
+    baseUrl: 'https://openrouter.ai/api/v1'
+    apiKeyEnv: 'OPENROUTER_API_KEY'
+    headers:
+      HTTP-Referer: 'https://github.com/yourname/apocalypse-bench'
+      X-Title: 'apocalypse-bench'
+    default:
+      temperature: null
+      maxTokens: 4000
+      timeoutMs: 120000
+
+models:
+  - id: 'lfm2.5-1.2b-thinking'
+    router: 'openrouter'
+    model: 'liquid/lfm-2.5-1.2b-thinking:free'
+  - id: 'gemma-4-26b-a4b-it'
+    router: 'openrouter'
+    model: 'google/gemma-4-26b-a4b-it'
+  - id: 'gemma-4-31b-it'
+    router: 'openrouter'
+    model: 'google/gemma-4-31b-it'
+  - id: 'granite-4.1-8b'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.1-8b'
+  - id: 'nemotron-3-nano-30b-a3b'
+    router: 'openrouter'
+    model: 'nvidia/nemotron-3-nano-30b-a3b'
+  - id: 'trinity-mini'
+    router: 'openrouter'
+    model: 'arcee-ai/trinity-mini'
+  - id: 'granite-4.0-h-micro'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.0-h-micro'
+  - id: 'phi-4-mini-instruct'
+    router: 'openrouter'
+    model: 'microsoft/phi-4-mini-instruct'
+  - id: 'gpt-oss-20b'
+    router: 'openrouter'
+    model: 'openai/gpt-oss-20b'
+  - id: 'gpt-5-nano'
+    router: 'openrouter'
+    model: 'openai/gpt-5-nano'
