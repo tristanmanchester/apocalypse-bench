@@ -48,6 +48,8 @@ export function formatEventSummary(e: RunnerEvent): string {
       return `question_completed ${e.modelId} ${e.questionId} score=${formatNumber(e.overallScore, 2)}`;
     case 'question_failed':
       return `question_failed ${e.modelId} ${e.questionId} stage=${e.stage} ${e.message}`;
+    case 'request_retry':
+      return `request_retry ${e.modelId} ${e.questionId} stage=${e.stage} attempt=${e.attempt}/${e.maxRetries} delay=${formatDuration(e.delayMs)} ${e.reason}`;
     case 'budget_spent':
       return `budget_spent ${formatUsd(e.spentUsd)}`;
     case 'budget_exceeded':

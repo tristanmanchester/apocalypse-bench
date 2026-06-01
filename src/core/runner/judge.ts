@@ -4,6 +4,12 @@ import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { buildJudgeOutputSchemaWithRubricIds, type JudgeOutput } from './types';
 import { computeBackoffMs, sleep } from '../../utils/backoff';
 import { redactSecrets } from '../../utils/redaction';
+import {
+  classifyRetryError,
+  computeRetryDelayMs,
+  DEFAULT_RETRY_POLICY,
+  shouldRetryWithinBudget,
+} from './retryPolicy';
 
 const _deps = {
   generateObject,
@@ -25,12 +31,16 @@ export type JudgeRetryOptions = {
   maxRetries: number;
   baseMs: number;
   maxMs: number;
+  maxTotalTimeMs?: number | null;
 };
 
-function isRetryableError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /429|5\d\d|timeout|ECONNRESET|ENOTFOUND|aborted/i.test(message);
-}
+export type JudgeRetryEvent = {
+  attempt: number;
+  maxRetries: number;
+  delayMs: number;
+  reason: string;
+  statusCode?: number;
+};
 
 type AbortableCall<T> = {
   call: () => Promise<T>;
@@ -82,20 +92,38 @@ function createAbortableCall<T>(call: (signal: AbortSignal) => Promise<T>): Abor
 async function judgeOnceWithRetry(
   req: JudgeRequest,
   retry: JudgeRetryOptions,
+  onRetry?: (event: JudgeRetryEvent) => void,
 ): Promise<{ object: JudgeOutput; raw: unknown }> {
+  const startedAtMs = Date.now();
   for (let attempt = 0; attempt <= retry.maxRetries; attempt++) {
     try {
       return await judgeOnce(req);
     } catch (err) {
-      const retryable = isRetryableError(err);
-      if (!retryable || attempt === retry.maxRetries) throw err;
-      await sleep(
-        computeBackoffMs(attempt, {
-          retries: retry.maxRetries,
-          baseMs: retry.baseMs,
-          maxMs: retry.maxMs,
-        }),
-      );
+      const retryDecision = classifyRetryError(err);
+      if (!retryDecision.retryable || attempt === retry.maxRetries) throw err;
+      const delayMs = computeRetryDelayMs({
+        attempt,
+        policy: retry,
+        retryAfterMs: retryDecision.retryAfterMs,
+      });
+      if (
+        !shouldRetryWithinBudget({
+          startedAtMs,
+          nowMs: Date.now(),
+          delayMs,
+          policy: retry,
+        })
+      ) {
+        throw err;
+      }
+      onRetry?.({
+        attempt: attempt + 1,
+        maxRetries: retry.maxRetries,
+        delayMs,
+        reason: retryDecision.reason,
+        statusCode: retryDecision.statusCode,
+      });
+      await sleep(delayMs);
     }
   }
   throw new Error('unreachable');
@@ -175,24 +203,25 @@ export function __setJudgeDepsForTest(next: Partial<typeof _deps>): void {
 
 export async function judgeWithRepairRetry(
   req: JudgeRequest,
-  opts?: { retry?: Partial<JudgeRetryOptions> },
+  opts?: {
+    retry?: Partial<JudgeRetryOptions>;
+    onRetry?: (event: JudgeRetryEvent) => void;
+  },
 ): Promise<{
   object: JudgeOutput;
   raw: unknown;
   didRepairRetry: boolean;
 }> {
   const retry: JudgeRetryOptions = {
-    maxRetries: 3,
-    baseMs: 600,
-    maxMs: 8000,
+    ...DEFAULT_RETRY_POLICY,
     ...opts?.retry,
   };
 
   try {
-    const { object, raw } = await judgeOnceWithRetry(req, retry);
+    const { object, raw } = await judgeOnceWithRetry(req, retry, opts?.onRetry);
     return { object, raw, didRepairRetry: false };
   } catch (err) {
-    if (isRetryableError(err)) throw err;
+    if (classifyRetryError(err).retryable) throw err;
     if (!NoObjectGeneratedError.isInstance(err)) throw err;
 
     const retryPrompt = buildRepairPrompt(
@@ -202,7 +231,11 @@ export async function judgeWithRepairRetry(
 
     const backoff = computeBackoffMs(0, { retries: 1, baseMs: 800, maxMs: 4000 });
     await sleep(backoff);
-    const { object, raw } = await judgeOnceWithRetry({ ...req, prompt: retryPrompt, messages: undefined }, retry);
+    const { object, raw } = await judgeOnceWithRetry(
+      { ...req, prompt: retryPrompt, messages: undefined },
+      retry,
+      opts?.onRetry,
+    );
     return { object, raw, didRepairRetry: true };
   }
 }
@@ -222,7 +255,7 @@ function missingRubricIds(params: {
 export async function judgeWithRubricCompletenessRetry(
   req: JudgeRequest,
   params: { rubric: Array<{ id: string }> },
-  opts?: { retry?: Partial<JudgeRetryOptions> },
+  opts?: { retry?: Partial<JudgeRetryOptions>; onRetry?: (event: JudgeRetryEvent) => void },
 ): Promise<{
   object: JudgeOutput;
   raw: unknown;

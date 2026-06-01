@@ -40,6 +40,30 @@ describe('config schema', () => {
     expect(result.success).toBe(false);
   });
 
+  test('accepts run retry policy overrides', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        retry: {
+          maxRetries: 6,
+          baseMs: 2000,
+          maxMs: 60000,
+          maxTotalTimeMs: null,
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.run.retry).toEqual({
+      maxRetries: 6,
+      baseMs: 2000,
+      maxMs: 60000,
+      maxTotalTimeMs: null,
+    });
+  });
+
   test('accepts openai-compatible candidate router with no auth', () => {
     const result = configSchema.safeParse({
       ...baseConfig,

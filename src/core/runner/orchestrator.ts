@@ -16,7 +16,7 @@ import { makeRunId, promptTemplateHash } from './runId';
 import type { CandidateMetrics, JudgeOutput } from './types';
 import { sha256FileHex } from '../../utils/hash';
 import { redactSecrets } from '../../utils/redaction';
-import { computeBackoffMs, sleep } from '../../utils/backoff';
+import { sleep } from '../../utils/backoff';
 import { writeJson } from '../../reports/json/exports';
 import { renderHtmlReport } from '../../reports/html/renderHtml';
 import {
@@ -44,8 +44,10 @@ import {
 } from './budget';
 import { maybeEmitOpenRouterGenerationMetrics } from './generationMetrics';
 import {
+  classifyRetryError,
+  computeRetryDelayMs,
   DEFAULT_RETRY_POLICY,
-  isRetryableError,
+  shouldRetryWithinBudget,
   type RetryPolicy,
 } from './retryPolicy';
 
@@ -82,6 +84,18 @@ export type RunnerEvent =
       latencyMs?: number;
       usage?: unknown;
       costUsd?: number;
+    }
+  | {
+      type: 'request_retry';
+      runId: string;
+      modelId: string;
+      questionId: string;
+      stage: 'candidate' | 'judge';
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      reason: string;
+      statusCode?: number;
     }
   | { type: 'budget_exceeded'; runId: string; maxBudgetUsd: number }
   | { type: 'budget_spent'; runId: string; spentUsd: number; source: 'candidate' | 'judge' }
@@ -217,8 +231,16 @@ async function generateTextWithRetry(params: {
   call: Omit<GenerateTextArgs, 'abortSignal'>;
   timeoutMs?: number | null;
   retryPolicy: RetryPolicy;
+  onRetry?: (event: {
+    attempt: number;
+    maxRetries: number;
+    delayMs: number;
+    reason: string;
+    statusCode?: number;
+  }) => void;
 }): Promise<Awaited<ReturnType<typeof generateText>>> {
-  const { call, timeoutMs, retryPolicy } = params;
+  const { call, timeoutMs, retryPolicy, onRetry } = params;
+  const startedAtMs = Date.now();
   for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
     try {
       if (timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0) {
@@ -238,18 +260,41 @@ async function generateTextWithRetry(params: {
 
       return await generateText(call as GenerateTextArgs);
     } catch (err) {
-      const retryable = isRetryableError(err);
-      if (!retryable || attempt === retryPolicy.maxRetries) throw err;
+      const retryDecision = classifyRetryError(err);
+      if (!retryDecision.retryable || attempt === retryPolicy.maxRetries) throw err;
+      const delayMs = computeRetryDelayMs({
+        attempt,
+        policy: retryPolicy,
+        retryAfterMs: retryDecision.retryAfterMs,
+      });
+      if (
+        !shouldRetryWithinBudget({
+          startedAtMs,
+          nowMs: Date.now(),
+          delayMs,
+          policy: retryPolicy,
+        })
+      ) {
+        throw err;
+      }
+      onRetry?.({
+        attempt: attempt + 1,
+        maxRetries: retryPolicy.maxRetries,
+        delayMs,
+        reason: retryDecision.reason,
+        statusCode: retryDecision.statusCode,
+      });
       await sleep(
-        computeBackoffMs(attempt, {
-          retries: retryPolicy.maxRetries,
-          baseMs: retryPolicy.baseMs,
-          maxMs: retryPolicy.maxMs,
-        }),
+        delayMs,
       );
     }
   }
   throw new Error('unreachable');
+}
+
+function redactReason(reason: string): string {
+  const redacted = redactSecrets(reason);
+  return typeof redacted === 'string' ? redacted : String(redacted);
 }
 
 function buildCandidateProviderOptions(
@@ -385,7 +430,22 @@ async function handleJudgeQuestion(params: {
         rubricIds,
       },
       { rubric: question.rubric.map((r) => ({ id: r.id })) },
-      { retry: retryPolicy },
+      {
+        retry: retryPolicy,
+        onRetry: (retry) =>
+          onEvent?.({
+            type: 'request_retry',
+            runId,
+            modelId: modelEntry.id,
+            questionId: question.id,
+            stage: 'judge',
+            attempt: retry.attempt,
+            maxRetries: retry.maxRetries,
+            delayMs: retry.delayMs,
+            reason: redactReason(retry.reason),
+            ...(retry.statusCode != null ? { statusCode: retry.statusCode } : {}),
+          }),
+      },
     );
 
     const computed = computeOverallScore({
@@ -547,6 +607,19 @@ async function handleCandidateQuestion(params: {
         maxOutputTokens: getCandidateMaxOutputTokens(config, modelEntry),
         providerOptions: buildCandidateProviderOptions(config, modelEntry),
       },
+      onRetry: (retry) =>
+        onEvent?.({
+          type: 'request_retry',
+          runId,
+          modelId: modelEntry.id,
+          questionId: question.id,
+          stage: 'candidate',
+          attempt: retry.attempt,
+          maxRetries: retry.maxRetries,
+          delayMs: retry.delayMs,
+          reason: redactReason(retry.reason),
+          ...(retry.statusCode != null ? { statusCode: retry.statusCode } : {}),
+        }),
     });
 
     const candidateText = candidateResult.text;
@@ -840,7 +913,7 @@ export async function runBenchmark(params: {
 
   const maxBudgetUsd = config.run.maxBudgetUsd ?? null;
   const budgetState = initBudgetState(maxBudgetUsd);
-  const retryPolicy = { ...DEFAULT_RETRY_POLICY };
+  const retryPolicy = { ...DEFAULT_RETRY_POLICY, ...config.run.retry };
   const ctx: RunContext = {
     config,
     deps,

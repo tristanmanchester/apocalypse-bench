@@ -8,6 +8,15 @@ const requestDefaultsSchema = z
   })
   .strict();
 
+const retryPolicySchema = z
+  .object({
+    maxRetries: z.number().int().nonnegative().optional(),
+    baseMs: z.number().int().positive().optional(),
+    maxMs: z.number().int().positive().optional(),
+    maxTotalTimeMs: z.number().int().positive().nullable().optional(),
+  })
+  .strict();
+
 const openAiCompatibleRouterSchema = z
   .object({
     baseUrl: z.string().min(1),
@@ -74,6 +83,7 @@ export const configSchema = z
         questionLimit: z.number().int().positive().nullable().optional(),
         categories: z.array(z.string().min(1)).nullable().optional(),
         maxBudgetUsd: z.number().positive().nullable().optional(),
+        retry: retryPolicySchema.optional(),
         concurrency: z
           .object({
             candidate: z.number().int().positive(),

@@ -9,7 +9,7 @@ run:
   maxBudgetUsd: null
   concurrency:
     candidate: 2
-    judge: 2
+    judge: 10
 
 candidate:
   maxTokens: 4000

@@ -186,6 +186,7 @@ function makeConfig(params: {
   outDir: string;
   maxBudgetUsd?: number | null;
   resume?: boolean;
+  retry?: ApocbenchConfig['run']['retry'];
 }): ApocbenchConfig {
   return {
     run: {
@@ -194,6 +195,7 @@ function makeConfig(params: {
       outDir: params.outDir,
       resume: params.resume ?? true,
       concurrency: { candidate: 1, judge: 1 },
+      ...(params.retry ? { retry: params.retry } : {}),
       ...(params.maxBudgetUsd != null ? { maxBudgetUsd: params.maxBudgetUsd } : {}),
     },
     judge: {
@@ -640,5 +642,113 @@ describe('runBenchmark regression coverage', () => {
         providerOptions: { ollama: { options: { num_predict: 99 } } },
       }),
     );
+  });
+
+  test('candidate retries retryable errors and emits retry events', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-retry-success');
+    const config = makeConfig({
+      outDir,
+      retry: { maxRetries: 2, baseMs: 1, maxMs: 1 },
+    });
+    const events: Array<{ type: string; attempt?: number; stage?: string; statusCode?: number }> = [];
+
+    generateTextMock
+      .mockRejectedValueOnce(Object.assign(new Error('Provider returned error'), { statusCode: 429 }))
+      .mockRejectedValueOnce(new Error('temporarily rate-limited upstream'))
+      .mockResolvedValueOnce({
+        text: 'candidate',
+        usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+        providerMetadata: {},
+      } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'candidate-retry-success-test',
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(3);
+    expect(
+      events
+        .filter((e) => e.type === 'request_retry')
+        .map((e) => ({ attempt: e.attempt, stage: e.stage, statusCode: e.statusCode })),
+    ).toEqual([
+      { attempt: 1, stage: 'candidate', statusCode: 429 },
+      { attempt: 2, stage: 'candidate', statusCode: undefined },
+    ]);
+  });
+
+  test('candidate stores failure after retry exhaustion', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-retry-exhausted');
+    const config = makeConfig({
+      outDir,
+      retry: { maxRetries: 2, baseMs: 1, maxMs: 1 },
+    });
+
+    generateTextMock.mockRejectedValue(new Error('429 Provider returned error'));
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'candidate-retry-exhausted-test',
+    });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(3);
+    const { results } = await getStore();
+    const row = Array.from(results.values()).find(
+      (entry) => entry.runId === 'candidate-retry-exhausted-test' && entry.questionId === 'Q1',
+    );
+    expect(row?.status).toBe('candidate_failed');
+  });
+
+  test('candidate does not retry non-retryable auth errors', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-non-retry');
+    const config = makeConfig({
+      outDir,
+      retry: { maxRetries: 6, baseMs: 1, maxMs: 1 },
+    });
+
+    generateTextMock.mockRejectedValue(new Error('401 Missing Authentication header'));
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'candidate-non-retry-test',
+    });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
   });
 });
