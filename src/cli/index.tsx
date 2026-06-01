@@ -8,8 +8,11 @@ import {
   run,
 } from '@stricli/core';
 
-import { createOpenRouterClient } from '../adapters/openrouter/client';
-import { createOllamaClient } from '../adapters/ollama/client';
+import {
+  MissingEnvVarError,
+  resolveCandidateModel,
+  resolveJudgeModel as resolveConfiguredJudgeModel,
+} from './modelResolver';
 import { loadConfig } from '../core/config/loadConfig';
 import type { ApocbenchConfig } from '../core/config/schema';
 import { expandDatasetPaths, loadJsonl, loadJsonlMany } from '../core/dataset/loadJsonl';
@@ -114,30 +117,21 @@ async function runCommand(
   const EVENTS_LIMIT = 100;
 
   const resolveModel = (m: ApocbenchConfig['models'][number]) => {
-    if (m.router === 'openrouter') {
-      const apiKey = process.env[config.routers.openrouter.apiKeyEnv];
-      if (!apiKey) die(`missing env var: ${config.routers.openrouter.apiKeyEnv}`);
-      const openrouter = createOpenRouterClient({
-        apiKey,
-        baseUrl: config.routers.openrouter.baseUrl,
-        headers: config.routers.openrouter.headers,
-      });
-      return openrouter(m.model, { usage: { include: true } });
+    try {
+      return resolveCandidateModel(config, m, process.env);
+    } catch (err) {
+      if (err instanceof MissingEnvVarError) die(err.message);
+      throw err;
     }
-
-    const ollama = createOllamaClient({ baseUrl: config.routers.ollama.baseUrl });
-    return ollama(m.model);
   };
 
   const resolveJudgeModel = () => {
-    const apiKey = process.env[config.routers.openrouter.apiKeyEnv];
-    if (!apiKey) die(`missing env var: ${config.routers.openrouter.apiKeyEnv}`);
-    const openrouter = createOpenRouterClient({
-      apiKey,
-      baseUrl: config.routers.openrouter.baseUrl,
-      headers: config.routers.openrouter.headers,
-    });
-    return openrouter(config.judge.model, { usage: { include: true } });
+    try {
+      return resolveConfiguredJudgeModel(config, process.env);
+    } catch (err) {
+      if (err instanceof MissingEnvVarError) die(err.message);
+      throw err;
+    }
   };
 
   const subscribers = new Set<(e: RunnerEvent) => void>();

@@ -136,6 +136,11 @@ type RunContext = {
 };
 
 type ModelEntry = ApocbenchConfig['models'][number];
+type CandidateRouterDefaults = {
+  temperature?: number | null;
+  maxTokens?: number;
+  timeoutMs?: number;
+};
 
 type GenerateTextArgs = Parameters<typeof generateText>[0];
 
@@ -278,7 +283,36 @@ function buildCandidateProviderOptions(
             },
           },
         }
-      : undefined) as ProviderOptions | undefined;
+    : undefined) as ProviderOptions | undefined;
+}
+
+function getCandidateRouterDefaults(
+  config: ApocbenchConfig,
+  modelEntry: ModelEntry,
+): CandidateRouterDefaults {
+  if (modelEntry.router === 'openai-compatible') {
+    const routerConfig = config.routers.openaiCompatible;
+    if (!routerConfig) {
+      throw new Error('missing router config: routers.openaiCompatible');
+    }
+    return routerConfig.default;
+  }
+
+  return config.routers[modelEntry.router].default;
+}
+
+function getCandidateMaxOutputTokens(
+  config: ApocbenchConfig,
+  modelEntry: ModelEntry,
+): number | undefined {
+  if (modelEntry.router === 'ollama') return undefined;
+  const defaults = getCandidateRouterDefaults(config, modelEntry);
+  return (
+    config.candidate?.maxTokens ??
+    modelEntry.params?.maxTokens ??
+    defaults.maxTokens ??
+    undefined
+  );
 }
 
 function buildJudgeProviderOptions(config: ApocbenchConfig): ProviderOptions {
@@ -493,10 +527,11 @@ async function handleCandidateQuestion(params: {
   let lastCandidateCostUsd: number | undefined;
 
   try {
+    const routerDefaults = getCandidateRouterDefaults(config, modelEntry);
     const candidateResult = await generateTextWithRetry({
       timeoutMs:
         modelEntry.params?.timeoutMs ??
-        config.routers[modelEntry.router].default.timeoutMs ??
+        routerDefaults.timeoutMs ??
         null,
       retryPolicy,
       call: {
@@ -507,15 +542,9 @@ async function handleCandidateQuestion(params: {
         ] as TextMessages,
         temperature:
           modelEntry.params?.temperature ??
-          config.routers[modelEntry.router].default.temperature ??
+          routerDefaults.temperature ??
           undefined,
-        maxOutputTokens:
-          modelEntry.router === 'openrouter'
-            ? (config.candidate?.maxTokens ??
-                modelEntry.params?.maxTokens ??
-                config.routers[modelEntry.router].default.maxTokens ??
-                undefined)
-            : undefined,
+        maxOutputTokens: getCandidateMaxOutputTokens(config, modelEntry),
         providerOptions: buildCandidateProviderOptions(config, modelEntry),
       },
     });

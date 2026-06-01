@@ -58,6 +58,19 @@ routers:
       maxTokens: 4000
       timeoutMs: 120000
 
+  # Generic OpenAI-compatible local/self-hosted endpoint.
+  # Uncomment with a model entry below to run against LM Studio, vLLM, llama.cpp server,
+  # or another server that exposes a /v1/chat/completions-compatible API.
+  # openaiCompatible:
+  #   baseUrl: 'http://127.0.0.1:1234/v1'
+  #   apiKeyEnv: null
+  #   # For authenticated proxies, use an env var name instead:
+  #   # apiKeyEnv: 'LOCAL_OPENAI_API_KEY'
+  #   default:
+  #     temperature: 0.5
+  #     maxTokens: 4000
+  #     timeoutMs: 120000
+
 models:
   # - id: 'liquid/lfm-2.2-6b'
   #   router: 'openrouter'
@@ -106,3 +119,6 @@ models:
   # - id: 'gemma3:4b'
   #   router: 'ollama'
   #   model: 'gemma3:4b'
+  # - id: 'local-openai'
+  #   router: 'openai-compatible'
+  #   model: 'local-model'

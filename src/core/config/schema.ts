@@ -8,6 +8,16 @@ const requestDefaultsSchema = z
   })
   .strict();
 
+const openAiCompatibleRouterSchema = z
+  .object({
+    baseUrl: z.string().min(1),
+    apiKeyEnv: z.string().min(1).nullable().optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    queryParams: z.record(z.string(), z.string()).optional(),
+    default: requestDefaultsSchema,
+  })
+  .strict();
+
 const openRouterRoutingSchema = z
   .object({
     requireParameters: z.boolean().optional(),
@@ -127,6 +137,7 @@ export const configSchema = z
             default: requestDefaultsSchema,
           })
           .strict(),
+        openaiCompatible: openAiCompatibleRouterSchema.optional(),
       })
       .strict(),
 
@@ -135,7 +146,7 @@ export const configSchema = z
         z
           .object({
             id: z.string().min(1),
-            router: z.enum(['ollama', 'openrouter']),
+            router: z.enum(['ollama', 'openrouter', 'openai-compatible']),
             model: z.string().min(1),
             provider: z.string().min(1).optional(),
             params: requestDefaultsSchema.optional(),
@@ -145,6 +156,18 @@ export const configSchema = z
           .strict(),
       )
       .min(1),
+  })
+  .superRefine((config, ctx) => {
+    if (
+      config.models.some((model) => model.router === 'openai-compatible') &&
+      !config.routers.openaiCompatible
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Missing routers.openaiCompatible for models using router=openai-compatible.',
+        path: ['routers', 'openaiCompatible'],
+      });
+    }
   })
   .strict();
 

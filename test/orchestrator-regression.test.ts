@@ -415,4 +415,230 @@ describe('runBenchmark regression coverage', () => {
       totalTokens: 7,
     });
   });
+
+  test('openai-compatible candidates receive standard max output tokens', async () => {
+    const outDir = path.join(RUNS_ROOT, 'openai-compatible-max-tokens');
+    const config: ApocbenchConfig = {
+      ...makeConfig({ outDir }),
+      candidate: { maxTokens: 123 },
+      routers: {
+        ...makeConfig({ outDir }).routers,
+        openaiCompatible: {
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          apiKeyEnv: null,
+          default: { temperature: 0.4, maxTokens: 456, timeoutMs: 1000 },
+        },
+      },
+      models: [
+        {
+          id: 'local',
+          router: 'openai-compatible',
+          model: 'local-model',
+          params: { maxTokens: 789 },
+        },
+      ],
+    };
+    const questions = makeQuestions(1);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'openai-compatible-max-tokens-test',
+    });
+
+    expect(generateTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: 123,
+        providerOptions: undefined,
+        temperature: 0.4,
+      }),
+    );
+  });
+
+  test('openai-compatible candidate max tokens fall back to model then router defaults', async () => {
+    const outDir = path.join(RUNS_ROOT, 'openai-compatible-defaults');
+    const base = makeConfig({ outDir });
+    const config: ApocbenchConfig = {
+      ...base,
+      candidate: undefined,
+      routers: {
+        ...base.routers,
+        openaiCompatible: {
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          apiKeyEnv: null,
+          default: { temperature: 0.4, maxTokens: 456, timeoutMs: 1000 },
+        },
+      },
+      models: [
+        {
+          id: 'local',
+          router: 'openai-compatible',
+          model: 'local-model',
+          params: { maxTokens: 789 },
+        },
+      ],
+    };
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'openai-compatible-model-default-test',
+    });
+
+    expect(generateTextMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ maxOutputTokens: 789 }),
+    );
+
+    vi.clearAllMocks();
+    config.models = [{ id: 'local', router: 'openai-compatible', model: 'local-model' }];
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'openai-compatible-router-default-test',
+    });
+
+    expect(generateTextMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ maxOutputTokens: 456 }),
+    );
+  });
+
+  test('ollama and openrouter candidate provider options stay provider-specific', async () => {
+    const outDir = path.join(RUNS_ROOT, 'provider-options');
+    const config = makeConfig({ outDir });
+    config.models = [{ id: 'm1', router: 'openrouter', model: 'candidate-model', provider: 'openrouter' }];
+    const questions = makeQuestions(1);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'openrouter-provider-options-test',
+    });
+
+    expect(generateTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: 50,
+        providerOptions: { openrouter: { provider: { order: ['openrouter'], allow_fallbacks: false } } },
+      }),
+    );
+
+    vi.clearAllMocks();
+    const ollamaConfig: ApocbenchConfig = {
+      ...makeConfig({ outDir: path.join(RUNS_ROOT, 'provider-options-ollama') }),
+      candidate: { maxTokens: 99 },
+      models: [{ id: 'ollama', router: 'ollama', model: 'llama3.2' }],
+    };
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config: ollamaConfig,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'ollama-provider-options-test',
+    });
+
+    expect(generateTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        maxOutputTokens: undefined,
+        providerOptions: { ollama: { options: { num_predict: 99 } } },
+      }),
+    );
+  });
 });

@@ -67,7 +67,41 @@ Key fields (high level):
 ### Providers / routers
 
 - **Ollama (local):** set the `routers.ollama.baseUrl` (default is `http://localhost:11434/api`).
+- **OpenAI-compatible local servers:** set `routers.openaiCompatible.baseUrl` to the server's `/v1`
+  endpoint and use `router: 'openai-compatible'` on the model. Leave `apiKeyEnv: null` for no-auth
+  local servers, or set it to an env var name for authenticated proxies.
 - **OpenRouter (hosted):** set `OPENROUTER_API_KEY` in your environment (see `apocbench.yml`).
+
+Example local OpenAI-compatible candidate:
+
+```yaml
+routers:
+  openaiCompatible:
+    baseUrl: 'http://127.0.0.1:1234/v1'
+    apiKeyEnv: null
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 120000
+
+models:
+  - id: 'local-openai'
+    router: 'openai-compatible'
+    model: 'local-model'
+```
+
+For an authenticated OpenAI-compatible server, set `apiKeyEnv` to an environment variable name:
+
+```yaml
+routers:
+  openaiCompatible:
+    baseUrl: 'https://your-proxy.example.com/v1'
+    apiKeyEnv: 'LOCAL_OPENAI_API_KEY'
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 120000
+```
 
 ## Dataset (V2)
 
