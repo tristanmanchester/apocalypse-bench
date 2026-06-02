@@ -8,6 +8,7 @@ type MockTool = {
 
 type MockAgentOptions = {
   initialState: {
+    systemPrompt: string;
     model: { id: string; provider: string; compat?: unknown };
     tools: MockTool[];
     messages: unknown[];
@@ -22,6 +23,9 @@ type MockAgentState = MockAgentOptions['initialState'] & {
 
 const agentMock = vi.hoisted(() => ({
   options: undefined as MockAgentOptions | undefined,
+  responseText: 'Use boiled water and verify disinfection.',
+  thinkingText: undefined as string | undefined,
+  promptCalls: 0,
 }));
 
 vi.mock('@earendil-works/pi-agent-core', () => ({
@@ -43,9 +47,15 @@ vi.mock('@earendil-works/pi-agent-core', () => ({
     }
 
     async prompt() {
+      agentMock.promptCalls += 1;
+      const content = [];
+      if (agentMock.thinkingText) {
+        content.push({ type: 'thinking', thinking: agentMock.thinkingText });
+      }
+      content.push({ type: 'text', text: agentMock.responseText });
       this.state.messages.push({
         role: 'assistant',
-        content: [{ type: 'text', text: 'Use boiled water and verify disinfection.' }],
+        content,
         api: 'openai-completions',
         provider: 'openrouter',
         model: this.state.model.id,
@@ -127,6 +137,9 @@ const config: ApocbenchConfig = {
 describe('runPiWikiAgent', () => {
   beforeEach(() => {
     agentMock.options = undefined;
+    agentMock.responseText = 'Use boiled water and verify disinfection.';
+    agentMock.thinkingText = undefined;
+    agentMock.promptCalls = 0;
   });
 
   test('creates a Pi OpenRouter agent with bounded wiki tools and trace recording', async () => {
@@ -202,12 +215,108 @@ describe('runPiWikiAgent', () => {
       chars: 44,
       truncated: false,
     });
+    expect(result.retrievalTrace.toolCallCount).toBe(2);
+    expect(result.retrievalTrace.toolCalls[0]).toMatchObject({
+      index: 1,
+      toolCallId: 'search-1',
+      toolName: 'wiki_search',
+      arguments: {
+        query: 'water purification',
+        topK: 2,
+      },
+      status: 'ok',
+      result: {
+        search: {
+          mode: 'bm25',
+          query: 'water purification',
+          hitCount: 1,
+        },
+      },
+    });
+    expect(result.retrievalTrace.toolCalls[0]?.result?.contentText).toContain(
+      'Water purification',
+    );
+    expect(result.retrievalTrace.toolCalls[1]).toMatchObject({
+      index: 2,
+      toolCallId: 'read-1',
+      toolName: 'wiki_read',
+      arguments: {
+        chunkId: 'c1',
+        maxChars: 100,
+      },
+      status: 'ok',
+      result: {
+        read: {
+          articleId: 'a1',
+          chunkId: 'c1',
+          title: 'Water purification',
+          chars: 44,
+          truncated: false,
+        },
+      },
+    });
+    expect(result.retrievalTrace.toolCalls[1]?.result?.contentText).toContain(
+      'Boiling water',
+    );
 
     await expect(agentMock.options?.beforeToolCall({})).resolves.toBeUndefined();
     await expect(agentMock.options?.beforeToolCall({})).resolves.toEqual({
       block: true,
       reason: 'wiki tool budget exceeded: maxToolCalls=1',
     });
+  });
+
+  test('strips native channel wrappers from final answer text', async () => {
+    agentMock.responseText =
+      '<|channel>thought\n<channel|>Use dry gypsum as a desiccant and measure the timed discharge rate.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I build a meter?',
+      mode: 'agent-bm25',
+      wikiClient: {
+        search: async ({ query }) => ({ mode: 'bm25', query, hits: [] }),
+        semanticSearch: async () => ({ mode: 'dense', query: '', hits: [] }),
+        hybridSearch: async () => ({ mode: 'hybrid', query: '', hits: [] }),
+        literalSearch: async () => ({ mode: 'literal', query: '', hits: [] }),
+        read: async () => ({
+          pointer: { articleId: 'a1', chunkId: 'c1', title: 'Kearny fallout meter' },
+          text: 'A dry chamber is required.',
+          truncated: false,
+        }),
+      },
+    });
+
+    expect(result.completion).toBe(
+      'Use dry gypsum as a desiccant and measure the timed discharge rate.',
+    );
+  });
+
+  test('does not repair long actionable answers just because they include planning preamble', async () => {
+    agentMock.responseText = [
+      'We need to produce the final answer now. The practical procedure is as follows.',
+      'Use clean containers, keep raw and treated materials separated, mark the working area, and assign one person to read back the steps before anyone starts.',
+      'First prepare the materials and check that the measuring device is dry, clean, and intact.',
+      'Then demonstrate the process slowly, have each trainee repeat it, and correct mistakes immediately.',
+      'Use fixed visual marks rather than memory.',
+      'Record the target value on the container, test the result before use, and stop if the test is outside the marked range.',
+      'Before release, run a final check: confirm the container label, confirm the tool used for raw material never touches treated material, confirm the timing step was completed, and confirm the measured result is in range.',
+      'If any check fails, discard or reprocess the batch rather than guessing.',
+    ].join(' ');
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I run a practical safety training?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(agentMock.promptCalls).toBe(1);
+    expect(result.completion).toContain('The practical procedure is as follows');
   });
 
   test('exposes only the mode-specific search tool plus read', async () => {
@@ -303,6 +412,24 @@ describe('runPiWikiAgent', () => {
     });
 
     const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain(
+      'You must use the local offline Wikipedia tools before answering.',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Use at least one Wikipedia search before answering',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Build search queries from distinctive nouns in the user prompt',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Read a chunk with wiki_read when search snippets are insufficient',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'with concrete checks or verification steps when relevant',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'You may use final_answer for deterministic submission',
+    );
     expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
       'wiki_hybrid_search',
       'wiki_search',
@@ -358,6 +485,43 @@ describe('runPiWikiAgent', () => {
       'dense',
       'literal',
     ]);
+    expect(result.retrievalTrace.toolCallCount).toBe(4);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.toolName)).toEqual([
+      'wiki_hybrid_search',
+      'wiki_search',
+      'wiki_semantic_search',
+      'wiki_literal_search',
+    ]);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.status)).toEqual([
+      'ok',
+      'ok',
+      'ok',
+      'ok',
+    ]);
+    expect(result.retrievalTrace.toolCalls[3]?.arguments).toEqual({
+      query: 'inactivate pathogens',
+      topK: 3,
+      chunkId: 'c1',
+    });
+  });
+
+  test('prefers final text over thinking content when extracting the answer', async () => {
+    agentMock.thinkingText =
+      'Okay, I need to search and plan before answering the user scenario.';
+    agentMock.responseText = 'Use dry gypsum as a desiccant and record leaf collapse over time.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I build a meter?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(result.completion).toBe(
+      'Use dry gypsum as a desiccant and record leaf collapse over time.',
+    );
   });
 });
 

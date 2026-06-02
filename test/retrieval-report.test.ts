@@ -21,6 +21,7 @@ describe('retrieval reporting', () => {
             retrieval: {
               traceCount: 1,
               modes: { 'rag-bm25': 1 },
+              toolCallCount: 2,
               searchCount: 1,
               readCount: 2,
               uniqueSourceTitles: ['Water purification'],
@@ -40,6 +41,23 @@ describe('retrieval reporting', () => {
           difficulty: 'Hard',
           retrieval_trace_json: JSON.stringify({
             mode: 'rag-bm25',
+            toolCallCount: 2,
+            toolCalls: [
+              {
+                index: 1,
+                toolCallId: 'search-1',
+                toolName: 'wiki_search',
+                arguments: { query: 'water' },
+                status: 'ok',
+              },
+              {
+                index: 2,
+                toolCallId: 'read-1',
+                toolName: 'wiki_read',
+                arguments: { chunkId: 'water:lead' },
+                status: 'ok',
+              },
+            ],
             searches: [{ mode: 'bm25', query: 'water', hits: [], latencyMs: 12 }],
             reads: [{ title: 'Water purification', chars: 100, truncated: false }],
           }),
@@ -50,6 +68,7 @@ describe('retrieval reporting', () => {
 
     expect(html).toContain('wiki reads');
     expect(html).toContain('Wiki retrieval summary');
+    expect(html).toContain('toolCallCount');
     expect(html).toContain('rag-bm25: 1');
     expect(html).toContain('Water purification');
   });
@@ -70,6 +89,16 @@ describe('retrieval reporting', () => {
           answer: 'Boil it when appropriate.',
           retrievalTrace: {
             mode: 'rag-bm25',
+            toolCallCount: 2,
+            toolCalls: [
+              {
+                index: 1,
+                toolCallId: 'search-1',
+                toolName: 'wiki_search',
+                arguments: { query: 'water purification' },
+                status: 'ok',
+              },
+            ],
             searches: [{ mode: 'bm25', query: 'water purification', hits: [] }],
             reads: [{ title: 'Water purification', chars: 100, truncated: false }],
           },
@@ -79,6 +108,7 @@ describe('retrieval reporting', () => {
 
     expect(md).toContain('#### Wiki retrieval');
     expect(md).toContain('- mode: rag-bm25');
+    expect(md).toContain('- tool_calls: 2');
     expect(md).toContain('- sources_read: 1');
     expect(md).toContain('Water purification');
   });

@@ -140,15 +140,25 @@ function selectQuestions(params: {
   config: ApocbenchConfig;
   limitOverride?: number | null;
   categoriesOverride?: string[] | null;
+  questionIdsOverride?: string[] | null;
 }): DatasetLine[] {
-  const { allQuestions, config, limitOverride, categoriesOverride } = params;
-  const questionLimit = limitOverride ?? config.run.questionLimit ?? null;
+  const { allQuestions, config, limitOverride, categoriesOverride, questionIdsOverride } =
+    params;
   const categories = categoriesOverride ?? config.run.categories ?? null;
+  const questionIds = questionIdsOverride ?? config.run.questionIds ?? null;
+  const questionLimit =
+    limitOverride ?? (questionIdsOverride && questionIdsOverride.length > 0
+      ? null
+      : config.run.questionLimit ?? null);
 
   let questions = allQuestions;
   if (categories && categories.length > 0) {
     const allowed = new Set(categories);
     questions = questions.filter((q) => allowed.has(q.category));
+  }
+  if (questionIds && questionIds.length > 0) {
+    const allowed = new Set(questionIds);
+    questions = questions.filter((q) => allowed.has(q.id));
   }
   if (questionLimit != null) {
     questions = questions.slice(0, questionLimit);
@@ -392,6 +402,49 @@ async function handleJudgeQuestion(params: {
   }
 }
 
+function nonAnswerAutoFailReason(candidateText: string): string | null {
+  const trimmed = candidateText.trim();
+  if (trimmed.length === 0) return 'candidate produced an empty final answer';
+
+  const normalized = trimmed.replace(/\s+/g, ' ');
+  const lower = normalized.toLowerCase();
+  const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+  const toolIntent =
+    /\b(?:tool calls?|tool_call|invoke search|produce the tool calls?|api call|awaiting api call|wiki_(?:search|read|hybrid_search|semantic_search|literal_search))\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:i|we) (?:need|will|should|must|would|can) (?:to )?(?:search|look up|call|read)\b/i.test(
+      normalized,
+    );
+
+  if (toolIntent && wordCount < 40) {
+    return 'candidate described tool/search intent instead of providing a final answer';
+  }
+
+  if (
+    /^<tool_call>[\s\S]*<\/tool_call>$/i.test(trimmed) ||
+    /^```(?:json)?\s*\{[\s\S]*"name"\s*:/i.test(trimmed) ||
+    /^\{[\s\S]*"name"\s*:[\s\S]*"arguments"\s*:/i.test(trimmed)
+  ) {
+    return 'candidate output only tool-call syntax instead of a final answer';
+  }
+
+  if (
+    wordCount < 12 &&
+    /\b(?:cannot|can't|unable|sorry|apologize|insufficient information|need more information)\b/.test(
+      lower,
+    )
+  ) {
+    return 'candidate produced a refusal or non-answer';
+  }
+
+  return null;
+}
+
+function zeroRubricScores(question: DatasetLine): Record<string, number> {
+  return Object.fromEntries(question.rubric.map((rubric) => [rubric.id, 0]));
+}
+
 async function handleCandidateQuestion(params: {
   ctx: RunContext;
   modelEntry: ModelEntry;
@@ -508,6 +561,41 @@ async function handleCandidateQuestion(params: {
         questionId: question.id,
         status: 'skipped',
         errorJson: JSON.stringify({ reason: 'budget_exceeded' }),
+      });
+      return;
+    }
+
+    const nonAnswerReason = nonAnswerAutoFailReason(candidateText);
+    if (nonAnswerReason) {
+      const judgeParsed: JudgeOutput = {
+        rubric_scores: zeroRubricScores(question),
+        auto_fail: true,
+        auto_fail_reason: nonAnswerReason,
+        overall_score: 0,
+        notes: nonAnswerReason,
+      };
+      upsertRunResult(db, {
+        runId,
+        modelId: modelEntry.id,
+        questionId: question.id,
+        judgeRequestJson: JSON.stringify({ skipped: 'non_answer_auto_fail' }),
+        judgeResponseJson: JSON.stringify({ skipped: 'non_answer_auto_fail' }),
+        judgeParsedJson: JSON.stringify(judgeParsed),
+        scoreOverall: 0,
+        scoreRubricJson: JSON.stringify(judgeParsed.rubric_scores),
+        autoFail: true,
+        autoFailReason: nonAnswerReason,
+        status: 'done',
+      });
+      onEvent?.({
+        type: 'question_completed',
+        runId,
+        modelId: modelEntry.id,
+        questionId: question.id,
+        overallScore: 0,
+        latencyMs: candidateMetrics.latencyMs,
+        usage: candidateMetrics.usage,
+        costUsd: candidateMetrics.costUsd,
       });
       return;
     }
@@ -729,6 +817,7 @@ function assertWikiCapabilities(params: {
 function summarizeRetrievalTraces(rawTraces: string[]): {
   traceCount: number;
   modes: Record<string, number>;
+  toolCallCount: number;
   searchCount: number;
   readCount: number;
   uniqueSourceTitles: string[];
@@ -744,6 +833,7 @@ function summarizeRetrievalTraces(rawTraces: string[]): {
   const titles = new Set<string>();
   const latencies: number[] = [];
   let traceCount = 0;
+  let toolCallCount = 0;
   let searchCount = 0;
   let readCount = 0;
 
@@ -756,6 +846,11 @@ function summarizeRetrievalTraces(rawTraces: string[]): {
     }
     const searches = Array.isArray(trace.searches) ? trace.searches : [];
     const reads = Array.isArray(trace.reads) ? trace.reads : [];
+    const toolCalls = Array.isArray(trace.toolCalls) ? trace.toolCalls : [];
+    toolCallCount +=
+      typeof trace.toolCallCount === 'number' && Number.isFinite(trace.toolCallCount)
+        ? trace.toolCallCount
+        : toolCalls.length;
     searchCount += searches.length;
     readCount += reads.length;
     for (const search of searches) {
@@ -774,6 +869,7 @@ function summarizeRetrievalTraces(rawTraces: string[]): {
   return {
     traceCount,
     modes,
+    toolCallCount,
     searchCount,
     readCount,
     uniqueSourceTitles: Array.from(titles).sort(),
@@ -834,6 +930,7 @@ export async function runBenchmark(params: {
   selectedModelIds?: string[];
   limitOverride?: number | null;
   categoriesOverride?: string[] | null;
+  questionIdsOverride?: string[] | null;
   forceResume?: boolean;
   onEvent?: (e: RunnerEvent) => void;
 }): Promise<RunResult | null> {
@@ -845,6 +942,7 @@ export async function runBenchmark(params: {
     config,
     limitOverride: params.limitOverride,
     categoriesOverride: params.categoriesOverride,
+    questionIdsOverride: params.questionIdsOverride,
   });
 
   const datasetSha = sha256FileHex(datasetAbsolutePath);

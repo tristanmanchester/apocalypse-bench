@@ -11,6 +11,44 @@ import type {
 export type RetrievalTrace = {
   mode: CandidateMode;
   queries: string[];
+  toolCallCount: number;
+  toolCalls: Array<{
+    index: number;
+    toolCallId: string;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    status: 'pending' | 'ok' | 'error' | 'blocked';
+    startedAtMs: number;
+    completedAtMs?: number;
+    latencyMs?: number;
+    result?: {
+      contentText?: string;
+      contentTextChars?: number;
+      search?: {
+        mode?: string;
+        query?: string;
+        hitCount: number;
+        topHits: Array<{
+          articleId?: string;
+          chunkId?: string;
+          title?: string;
+          score?: number;
+          bm25Score?: number;
+          denseScore?: number;
+          sources?: string[];
+        }>;
+      };
+      read?: {
+        articleId?: string;
+        chunkId?: string;
+        title?: string;
+        chars: number;
+        truncated?: boolean;
+      };
+      error?: string;
+    };
+    error?: string;
+  }>;
   searches: Array<{
     mode: WikiSearchMode;
     query: string;
@@ -98,6 +136,8 @@ export async function buildWikiGroundedCandidatePrompt(params: {
     trace: {
       mode,
       queries: [query],
+      toolCallCount: 0,
+      toolCalls: [],
       searches: [traceSearch(search)],
       reads: reads.map(traceRead),
       contextChars,

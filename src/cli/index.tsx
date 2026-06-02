@@ -89,6 +89,7 @@ type RunFlags = {
   json?: boolean;
   limit?: number;
   categories?: readonly string[];
+  questions?: readonly string[];
   models?: readonly string[];
 };
 
@@ -154,6 +155,7 @@ async function runCommand(
     selectedModelIds: flags.models ? Array.from(flags.models) : undefined,
     limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
     categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+    questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
     onEvent: (e) => {
       const sanitized = sanitizeEvent(e);
       events.push(sanitized);
@@ -791,7 +793,7 @@ const root = buildRouteMap({
       docs: {
         brief: 'Run benchmark',
         customUsage: [
-          'run -c apocbench.yml [--dry-run] [--json] [--quiet] [--limit N] [--categories a,b]',
+          'run -c apocbench.yml [--dry-run] [--json] [--quiet] [--limit N] [--categories a,b] [--questions Q1,Q2]',
           'run <runId> -c apocbench.yml  # resume by runId',
         ],
       },
@@ -814,6 +816,13 @@ const root = buildRouteMap({
           categories: {
             kind: 'parsed',
             brief: 'Comma-separated categories',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+          questions: {
+            kind: 'parsed',
+            brief: 'Comma-separated question ids to run',
             optional: true,
             variadic: ',',
             parse: (s) => s,
@@ -960,6 +969,13 @@ const root = buildRouteMap({
           categories: {
             kind: 'parsed',
             brief: 'Comma-separated categories',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+          questions: {
+            kind: 'parsed',
+            brief: 'Comma-separated question ids to run',
             optional: true,
             variadic: ',',
             parse: (s) => s,

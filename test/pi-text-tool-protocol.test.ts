@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
-import type { AssistantMessage, Context } from '@earendil-works/pi-ai';
+import type { AssistantMessage, Context, Tool } from '@earendil-works/pi-ai';
 import {
+  finalAnswerFromToolCall,
+  normalizeParsedToolCall,
   parseTextToolCall,
   toTextToolProtocolContext,
 } from '../src/adapters/pi/textToolProtocol';
@@ -195,11 +197,105 @@ describe('Pi text tool protocol', () => {
     }
   });
 
+  test('parses and normalizes self-healed tool-call formats observed in runs', () => {
+    expect(
+      parseTextToolCall(
+        'We need to produce tool calls. {"name":"wiki_hybrid_search","arguments":{"query":"potato propagation seed potatoes cutting into pieces sprouting","topK":5}}',
+      ),
+    ).toEqual({
+      name: 'wiki_hybrid_search',
+      arguments: {
+        query: 'potato propagation seed potatoes cutting into pieces sprouting',
+        topK: 5,
+      },
+    });
+
+    const pseudoApiCall = parseTextToolCall(
+      '__API Call Begin__ `search ( q = "sustainable agriculture practices" )` __Awaiting API Call Result(s)__',
+    );
+    expect(pseudoApiCall).toEqual({
+      name: 'search',
+      arguments: { q: 'sustainable agriculture practices' },
+    });
+
+    const tools = [
+      {
+        name: 'wiki_hybrid_search',
+        description: 'Hybrid search.',
+        parameters: { type: 'object', properties: {} },
+      },
+      {
+        name: 'wiki_read',
+        description: 'Read.',
+        parameters: { type: 'object', properties: {} },
+      },
+    ] satisfies Tool[];
+    expect(pseudoApiCall ? normalizeParsedToolCall(pseudoApiCall, tools) : undefined).toEqual({
+      name: 'wiki_hybrid_search',
+      arguments: { query: 'sustainable agriculture practices' },
+    });
+
+    const argumentOnlyRead = parseTextToolCall('{"chunkId":"633593:heat-treatment","maxChars":4000}');
+    expect(argumentOnlyRead).toEqual({
+      name: 'wiki_read',
+      arguments: { chunkId: '633593:heat-treatment', maxChars: 4000 },
+    });
+
+    expect(
+      parseTextToolCall(
+        'We need to read the relevant chunk now.{"chunkId":"1557416:lead","maxChars":4000}',
+      ),
+    ).toEqual({
+      name: 'wiki_read',
+      arguments: { chunkId: '1557416:lead', maxChars: 4000 },
+    });
+
+    const argumentOnlySearch = parseTextToolCall(
+      '{"query":"case hardening steel charcoal bone","topK":5}',
+    );
+    expect(argumentOnlySearch ? normalizeParsedToolCall(argumentOnlySearch, tools) : undefined)
+      .toEqual({
+        name: 'wiki_hybrid_search',
+        arguments: { query: 'case hardening steel charcoal bone', topK: 5 },
+      });
+
+    const embeddedArgumentOnlySearch = parseTextToolCall(
+      `We must call wiki_hybrid_search to fetch information. Let's do:{"query":"Kearny fallout meter electroscope","topK":5}`,
+    );
+    expect(
+      embeddedArgumentOnlySearch
+        ? normalizeParsedToolCall(embeddedArgumentOnlySearch, tools)
+        : undefined,
+    ).toEqual({
+      name: 'wiki_hybrid_search',
+      arguments: { query: 'Kearny fallout meter electroscope', topK: 5 },
+    });
+  });
+
   test('ignores malformed tool call blocks', () => {
     expect(parseTextToolCall('<tool_call>{"name":"wiki_search"</tool_call>')).toBeUndefined();
     expect(
       parseTextToolCall('<tool_call>{"name":"wiki_search","arguments":[]}</tool_call>'),
     ).toBeUndefined();
+  });
+
+  test('recognizes virtual final_answer calls as terminal answer text', () => {
+    const call = parseTextToolCall(
+      '<tool_call>{"name":"final_answer","arguments":{"answer":"Boil water and let it cool before drinking."}}</tool_call>',
+    );
+    expect(call).toEqual({
+      name: 'final_answer',
+      arguments: { answer: 'Boil water and let it cool before drinking.' },
+    });
+    expect(call ? finalAnswerFromToolCall(call) : undefined).toBe(
+      'Boil water and let it cool before drinking.',
+    );
+    expect(
+      finalAnswerFromToolCall({
+        name: 'final_answer',
+        arguments: { response: 'Use dry browns to fix a wet compost pile.' },
+      }),
+    ).toBe('Use dry browns to fix a wet compost pile.');
   });
 
   test('converts Pi tool turns to plain text and strips native tool declarations', () => {
@@ -229,6 +325,10 @@ describe('Pi text tool protocol', () => {
     const converted = toTextToolProtocolContext(context);
     expect(converted.tools).toBeUndefined();
     expect(converted.systemPrompt).toContain('Wikipedia tool protocol');
+    expect(converted.systemPrompt).toContain('"name": "final_answer"');
+    expect(converted.systemPrompt).toContain(
+      '<tool_call>{"name":"final_answer","arguments":{"answer":"complete final answer text"}}</tool_call>',
+    );
     expect(converted.messages[1]).toMatchObject({
       role: 'assistant',
       content: [
@@ -243,5 +343,34 @@ describe('Pi text tool protocol', () => {
       role: 'user',
       content: expect.stringContaining('<tool_result>'),
     });
+  });
+
+  test('truncates tool results in the model-facing text transcript', () => {
+    const context: Context = {
+      systemPrompt: 'Answer survival questions.',
+      tools: [
+        {
+          name: 'wiki_read',
+          description: 'Read offline Wikipedia.',
+          parameters: { type: 'object', properties: {} },
+        },
+      ],
+      messages: [
+        {
+          role: 'toolResult',
+          toolCallId: 'read-1',
+          toolName: 'wiki_read',
+          content: [{ type: 'text', text: 'x'.repeat(3500) }],
+          isError: false,
+          timestamp: 2,
+        },
+      ],
+    };
+
+    const converted = toTextToolProtocolContext(context);
+    const content = converted.messages[0]?.content;
+    expect(typeof content).toBe('string');
+    expect(content).toContain('[tool result truncated for context: 500 chars omitted]');
+    expect(content).not.toContain('x'.repeat(3500));
   });
 });

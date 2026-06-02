@@ -28,6 +28,8 @@ const QWEN_FUNCTION_PATTERN =
 const QWEN_PARAMETER_PATTERN =
   /<parameter=([A-Za-z_][A-Za-z0-9_]*)>\s*([\s\S]*?)\s*<\/parameter>/gi;
 const PHI4_MINI_FUNCTIONS_PATTERN = /functools\[(.*?)\]/is;
+const FINAL_ANSWER_TOOL_NAME = 'final_answer';
+const MAX_TOOL_RESULT_CONTEXT_CHARS = 3000;
 
 const EMPTY_USAGE: Usage = {
   input: 0,
@@ -74,7 +76,22 @@ export function createTextToolProtocolStreamFn(): StreamFunction {
           return;
         }
 
-        const toolMessage = toToolCallMessage(assistant, parsed);
+        const normalized = normalizeParsedToolCall(parsed, context.tools ?? []);
+        const finalAnswer = finalAnswerFromToolCall(normalized);
+        if (finalAnswer != null) {
+          stream.push({
+            type: 'done',
+            reason: 'stop',
+            message: {
+              ...assistant,
+              content: [{ type: 'text', text: finalAnswer }],
+              stopReason: 'stop',
+            },
+          });
+          return;
+        }
+
+        const toolMessage = toToolCallMessage(assistant, normalized);
         stream.push({
           type: 'done',
           reason: 'toolUse',
@@ -114,13 +131,35 @@ export function parseTextToolCall(text: string): ParsedTextToolCall | undefined 
   const jsonCall = parseJsonToolCall(candidate);
   if (jsonCall) return jsonCall;
 
+  const argumentOnlyJsonCall = parseArgumentOnlyJsonToolCall(candidate);
+  if (argumentOnlyJsonCall) return argumentOnlyJsonCall;
+
+  const embeddedJsonCall = parseEmbeddedJsonToolCall(candidate);
+  if (embeddedJsonCall) return embeddedJsonCall;
+
+  const embeddedArgumentOnlyJsonCall = parseEmbeddedArgumentOnlyJsonToolCall(candidate);
+  if (embeddedArgumentOnlyJsonCall) return embeddedArgumentOnlyJsonCall;
+
   const qwenCall = parseQwenXmlToolCall(candidate);
   if (qwenCall) return qwenCall;
 
   const phi4MiniCall = parsePhi4MiniToolCall(candidate);
   if (phi4MiniCall) return phi4MiniCall;
 
+  const pseudoApiCall = parsePseudoApiToolCall(candidate);
+  if (pseudoApiCall) return pseudoApiCall;
+
   return parsePythonicToolCall(candidate);
+}
+
+export function finalAnswerFromToolCall(call: ParsedTextToolCall): string | undefined {
+  if (call.name !== FINAL_ANSWER_TOOL_NAME) return undefined;
+  const value =
+    call.arguments.answer ??
+    call.arguments.final_answer ??
+    call.arguments.response ??
+    call.arguments.text;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : '';
 }
 
 function parseJsonToolCall(payload: string): ParsedTextToolCall | undefined {
@@ -143,6 +182,70 @@ function parseJsonToolCall(payload: string): ParsedTextToolCall | undefined {
   if (!parsed || typeof parsed !== 'object') return undefined;
   if (Array.isArray(parsed)) return undefined;
   return parseJsonToolCallRecord(parsed as Record<string, unknown>);
+}
+
+function parseArgumentOnlyJsonToolCall(payload: string): ParsedTextToolCall | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload.trim());
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const record = parsed as Record<string, unknown>;
+
+  if (typeof record.chunkId === 'string' && record.chunkId.trim().length > 0) {
+    return {
+      name: 'wiki_read',
+      arguments: normalizeArgumentOnlyRecord(record),
+    };
+  }
+
+  if (typeof record.query === 'string' && record.query.trim().length > 0) {
+    return {
+      name: 'search',
+      arguments: normalizeArgumentOnlyRecord(record),
+    };
+  }
+
+  return undefined;
+}
+
+function normalizeArgumentOnlyRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const args = { ...record };
+  if (typeof args.max_chars === 'number' && args.maxChars == null) {
+    args.maxChars = args.max_chars;
+    delete args.max_chars;
+  }
+  return args;
+}
+
+function parseEmbeddedJsonToolCall(payload: string): ParsedTextToolCall | undefined {
+  if (!/"(?:name|tool|function_call|tool_calls)"\s*:/.test(payload)) return undefined;
+  for (let idx = 0; idx < payload.length; idx += 1) {
+    if (payload[idx] !== '{') continue;
+    const end = findMatchingBrace(payload, idx);
+    if (end < 0) continue;
+    const candidate = payload.slice(idx, end + 1);
+    if (!/"(?:arguments|parameters|args|input|function|tool_calls)"\s*:/.test(candidate)) {
+      continue;
+    }
+    const call = parseJsonToolCall(candidate);
+    if (call) return call;
+  }
+  return undefined;
+}
+
+function parseEmbeddedArgumentOnlyJsonToolCall(payload: string): ParsedTextToolCall | undefined {
+  if (!/"(?:chunkId|query)"\s*:/.test(payload)) return undefined;
+  for (let idx = 0; idx < payload.length; idx += 1) {
+    if (payload[idx] !== '{') continue;
+    const end = findMatchingBrace(payload, idx);
+    if (end < 0) continue;
+    const call = parseArgumentOnlyJsonToolCall(payload.slice(idx, end + 1));
+    if (call) return call;
+  }
+  return undefined;
 }
 
 function parseJsonToolCallRecord(
@@ -292,6 +395,15 @@ function parsePhi4MiniToolCall(text: string): ParsedTextToolCall | undefined {
   return parseJsonToolCall(`[${match[1]}]`);
 }
 
+function parsePseudoApiToolCall(text: string): ParsedTextToolCall | undefined {
+  const match =
+    /(?:__API Call Begin__|API Call Begin|Awaiting API Call Result\(s\))[\s\S]*?`?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(([\s\S]*?)\)\s*`?/i.exec(
+      text,
+    );
+  if (!match) return undefined;
+  return parsePythonicToolCall(`${match[1]}(${match[2] ?? ''})`);
+}
+
 function normalizeJsonArgumentsFromText(input: string): Record<string, unknown> | undefined {
   return normalizeJsonArguments(input.trim());
 }
@@ -364,6 +476,40 @@ function findMatchingParen(input: string, openParenIndex: number): number {
     if (quote) continue;
     if (char === '(') depth += 1;
     if (char === ')') {
+      depth -= 1;
+      if (depth === 0) return idx;
+    }
+  }
+
+  return -1;
+}
+
+function findMatchingBrace(input: string, openBraceIndex: number): number {
+  let quote: '"' | undefined;
+  let escaped = false;
+  let depth = 0;
+
+  for (let idx = openBraceIndex; idx < input.length; idx += 1) {
+    const char = input[idx];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' && !quote) {
+      quote = char;
+      continue;
+    }
+    if (char === quote) {
+      quote = undefined;
+      continue;
+    }
+    if (quote) continue;
+    if (char === '{') depth += 1;
+    if (char === '}') {
       depth -= 1;
       if (depth === 0) return idx;
     }
@@ -474,11 +620,28 @@ function parsePythonicValue(input: string): unknown {
 function appendTextToolProtocol(systemPrompt: string | undefined, tools: Tool[]): string {
   const searchToolName = tools.find((tool) => tool.name !== 'wiki_read')?.name ?? 'wiki_search';
   const toolDefinitions = JSON.stringify(
-    tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    })),
+    [
+      ...tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      })),
+      {
+        name: FINAL_ANSWER_TOOL_NAME,
+        description:
+          'Optionally submit the final benchmark answer after completing the required Wikipedia searches and reads. Plain text final answers are also accepted.',
+        parameters: {
+          type: 'object',
+          properties: {
+            answer: {
+              type: 'string',
+              description: 'The complete final answer for the benchmark judge.',
+            },
+          },
+          required: ['answer'],
+        },
+      },
+    ],
     null,
     2,
   );
@@ -493,11 +656,44 @@ function appendTextToolProtocol(systemPrompt: string | undefined, tools: Tool[])
     `<tool_call>{"name":"${searchToolName}","arguments":{"query":"example query","topK":5}}</tool_call>`,
     'or:',
     '<tool_call>{"name":"wiki_read","arguments":{"chunkId":"chunk-id-from-search","maxChars":4000}}</tool_call>',
+    'When you are ready to answer, plain text is accepted. For deterministic extraction, you may instead output exactly one final_answer call and no other text:',
+    '<tool_call>{"name":"final_answer","arguments":{"answer":"complete final answer text"}}</tool_call>',
     'The neutral JSON form above is preferred. If your chat template is trained to use a native tool-call format, the harness also accepts documented Liquid, Gemma, Qwen/Nemotron, Phi funtools, Harmony, OpenAI Responses/Chat, and Anthropic tool_use text calls.',
-    'After a tool result is returned, continue reasoning from the result. When no more tool access is needed, answer normally without a tool_call block.',
+    'After a wiki tool result is returned, continue reasoning from the result. Use final_answer only for the completed final answer; if that format is awkward, answer normally in plain text.',
   ]
     .filter((part) => part != null && String(part).trim().length > 0)
     .join('\n');
+}
+
+export function normalizeParsedToolCall(
+  call: ParsedTextToolCall,
+  tools: Tool[],
+): ParsedTextToolCall {
+  if (call.name === FINAL_ANSWER_TOOL_NAME) return call;
+  const availableToolNames = tools.map((tool) => tool.name);
+  const searchToolName =
+    availableToolNames.find((name) => name !== 'wiki_read' && name.includes('search')) ??
+    'wiki_search';
+  let name = call.name;
+  if (['search', 'wiki_search_tool', 'wikipedia_search'].includes(name)) {
+    name = searchToolName;
+  } else if (['read', 'wiki_read_tool', 'wikipedia_read'].includes(name)) {
+    name = 'wiki_read';
+  }
+
+  const args = { ...call.arguments };
+  if (args.query == null && typeof args.q === 'string') {
+    args.query = args.q;
+    delete args.q;
+  }
+  if (args.topK == null && typeof args.k === 'number') args.topK = args.k;
+  if (args.topK == null && typeof args.limit === 'number') args.topK = args.limit;
+  if (args.maxChars == null && typeof args.max_chars === 'number') {
+    args.maxChars = args.max_chars;
+    delete args.max_chars;
+  }
+
+  return { name, arguments: args };
 }
 
 function extractToolCallPayload(text: string): string | undefined {
@@ -528,7 +724,7 @@ function toTextProtocolMessage(message: Message): Message {
 }
 
 function toolResultToUserMessage(message: ToolResultMessage): Message {
-  const payload = stringifyTextContent(message.content);
+  const payload = truncateToolResultForContext(stringifyTextContent(message.content));
   const status = message.isError ? 'error' : 'ok';
   return {
     role: 'user',
@@ -540,6 +736,14 @@ function toolResultToUserMessage(message: ToolResultMessage): Message {
     ].join('\n'),
     timestamp: message.timestamp,
   };
+}
+
+function truncateToolResultForContext(payload: string): string {
+  if (payload.length <= MAX_TOOL_RESULT_CONTEXT_CHARS) return payload;
+  return [
+    payload.slice(0, MAX_TOOL_RESULT_CONTEXT_CHARS),
+    `[tool result truncated for context: ${payload.length - MAX_TOOL_RESULT_CONTEXT_CHARS} chars omitted]`,
+  ].join('\n');
 }
 
 function stringifyUserContent(content: unknown): string {

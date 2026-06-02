@@ -8,8 +8,8 @@ run:
   categories: null
   maxBudgetUsd: null
   concurrency:
-    candidate: 1
-    judge: 1
+    candidate: 3
+    judge: 10
 
 candidate:
   maxTokens: 4000

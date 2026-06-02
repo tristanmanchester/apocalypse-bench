@@ -94,6 +94,7 @@ export function renderHtmlReport(params: {
           <th class="num" title="% of completed questions flagged by judge (e.g. refusal, unsafe content) — scored as 0">auto-fail %</th>
           <th class="num" title="Median latency">p50 ms</th>
           <th class="num" title="90th percentile latency">p90 ms</th>
+          <th class="num" title="Executed or blocked wiki tool calls recorded in retrieval traces">wiki tool calls</th>
           <th class="num" title="Wiki source reads recorded in retrieval traces">wiki reads</th>
         </tr>
       </thead>
@@ -242,6 +243,11 @@ function renderRetrievalTrace(trace: unknown): string {
   const mode = typeof trace.mode === 'string' ? trace.mode : 'unknown';
   const searches = Array.isArray(trace.searches) ? trace.searches : [];
   const reads = Array.isArray(trace.reads) ? trace.reads : [];
+  const toolCalls = Array.isArray(trace.toolCalls) ? trace.toolCalls : [];
+  const toolCallCount =
+    typeof trace.toolCallCount === 'number' && Number.isFinite(trace.toolCallCount)
+      ? trace.toolCallCount
+      : toolCalls.length;
   const titles = reads
     .map((read) =>
       isObjectRecord(read) && typeof read.title === 'string' ? read.title : null,
@@ -251,6 +257,7 @@ function renderRetrievalTrace(trace: unknown): string {
     <h3>Wiki retrieval</h3>
     <div class="grid">
       ${row('mode', mode)}
+      ${row('tool calls', String(toolCallCount))}
       ${row('searches', String(searches.length))}
       ${row('sources read', String(reads.length))}
       ${titles.length > 0 ? row('source titles', titles.join(', ')) : ''}
@@ -321,6 +328,7 @@ function renderModelRow(m: Record<string, unknown>): string {
       <td class="num">${fmtPct(m?.autoFailRate)}</td>
       <td class="num">${fmtMs(latency.medianMs)}</td>
       <td class="num">${fmtMs(latency.p90Ms)}</td>
+      <td class="num">${fmtInt(retrieval?.toolCallCount)}</td>
       <td class="num">${fmtInt(retrieval?.readCount)}</td>
     </tr>
   `.trim();
@@ -424,6 +432,7 @@ function renderRetrievalSummary(retrieval: Record<string, unknown>): string {
       <div class="grid">
         ${row('traceCount', fmtInt(retrieval.traceCount))}
         ${row('modes', formatModes(retrieval.modes))}
+        ${row('toolCallCount', fmtInt(retrieval.toolCallCount))}
         ${row('searchCount', fmtInt(retrieval.searchCount))}
         ${row('readCount', fmtInt(retrieval.readCount))}
         ${row('retrieval p50', fmtMs(latency.medianMs))}

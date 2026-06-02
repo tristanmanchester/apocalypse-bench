@@ -75,6 +75,7 @@ export async function executeAiSdkCandidate(params: {
   let effectivePrompt = basePrompt;
   let retrievalTrace: CandidateExecutionResult['retrievalTrace'];
   const startedAtMs = Date.now();
+  const routerDefaults = getCandidateRouterDefaults(config, modelEntry);
 
   if (isWikiCandidateMode(candidateMode)) {
     if (!config.wiki || !wikiClient) {
@@ -82,12 +83,22 @@ export async function executeAiSdkCandidate(params: {
     }
 
     if (isAgentCandidateMode(candidateMode)) {
-      const agentResult = await runPiWikiAgent({
-        config,
-        modelEntry,
-        mode: candidateMode,
-        basePrompt,
-        wikiClient,
+      const agentResult = await runPiWikiAgentWithRetry({
+        timeoutMs:
+          modelEntry.params?.timeoutMs ??
+          routerDefaults.timeoutMs ??
+          null,
+        retryPolicy,
+        call: (signal) =>
+          runPiWikiAgent({
+            config,
+            modelEntry,
+            mode: candidateMode,
+            basePrompt,
+            wikiClient,
+            signal,
+          }),
+        onRetry,
       });
       return {
         prompt: basePrompt,
@@ -113,7 +124,6 @@ export async function executeAiSdkCandidate(params: {
     }
   }
 
-  const routerDefaults = getCandidateRouterDefaults(config, modelEntry);
   const result = await generateTextWithRetry({
     timeoutMs:
       modelEntry.params?.timeoutMs ??
@@ -187,6 +197,64 @@ async function generateTextWithRetry(params: {
       }
 
       return await generateText(call as GenerateTextArgs);
+    } catch (err) {
+      const retryDecision = classifyRetryError(err);
+      if (!retryDecision.retryable || attempt === retryPolicy.maxRetries) throw err;
+      const delayMs = computeRetryDelayMs({
+        attempt,
+        policy: retryPolicy,
+        retryAfterMs: retryDecision.retryAfterMs,
+      });
+      if (
+        !shouldRetryWithinBudget({
+          startedAtMs,
+          nowMs: Date.now(),
+          delayMs,
+          policy: retryPolicy,
+        })
+      ) {
+        throw err;
+      }
+      onRetry?.({
+        attempt: attempt + 1,
+        maxRetries: retryPolicy.maxRetries,
+        delayMs,
+        reason: retryDecision.reason,
+        statusCode: retryDecision.statusCode,
+      });
+      await sleep(delayMs);
+    }
+  }
+  throw new Error('unreachable');
+}
+
+async function runPiWikiAgentWithRetry(params: {
+  call: (signal: AbortSignal) => Promise<Awaited<ReturnType<typeof runPiWikiAgent>>>;
+  timeoutMs?: number | null;
+  retryPolicy: RetryPolicy;
+  onRetry?: (event: {
+    attempt: number;
+    maxRetries: number;
+    delayMs: number;
+    reason: string;
+    statusCode?: number;
+  }) => void;
+}): Promise<Awaited<ReturnType<typeof runPiWikiAgent>>> {
+  const { call, timeoutMs, retryPolicy, onRetry } = params;
+  const startedAtMs = Date.now();
+  for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
+    try {
+      const abortable = createAbortableCall(call);
+      if (timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        const timeoutId = setTimeout(() => abortable.abort(), timeoutMs);
+        try {
+          return await abortable.call();
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      }
+
+      return await abortable.call();
     } catch (err) {
       const retryDecision = classifyRetryError(err);
       if (!retryDecision.retryable || attempt === retryPolicy.maxRetries) throw err;

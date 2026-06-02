@@ -431,6 +431,12 @@ function renderRetrievalTrace(
 
   const searches = Array.isArray(trace.searches) ? trace.searches : [];
   const reads = Array.isArray(trace.reads) ? trace.reads : [];
+  const toolCalls = Array.isArray(trace.toolCalls) ? trace.toolCalls : [];
+  const toolCallCount =
+    typeof trace.toolCallCount === 'number' && Number.isFinite(trace.toolCallCount)
+      ? trace.toolCallCount
+      : toolCalls.length;
+  lines.push(`- tool_calls: ${toolCallCount}`);
   lines.push(`- searches: ${searches.length}`);
   lines.push(`- sources_read: ${reads.length}`);
 

@@ -638,6 +638,95 @@ describe('runBenchmark regression coverage', () => {
     );
   });
 
+  test('question id override runs only the selected questions', async () => {
+    const outDir = path.join(RUNS_ROOT, 'question-id-filter');
+    const config = makeConfig({ outDir });
+    config.run.questionLimit = 1;
+    const questions = makeQuestions(5);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'question-id-filter-test',
+      questionIdsOverride: ['Q2', 'Q4', 'Q5'],
+    });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(3);
+    expect(judgeMock).toHaveBeenCalledTimes(3);
+
+    const { results } = await getStore();
+    const questionIds = Array.from(results.values())
+      .filter((row) => row.runId === 'question-id-filter-test')
+      .map((row) => row.questionId)
+      .sort();
+    expect(questionIds).toEqual(['Q2', 'Q4', 'Q5']);
+  });
+
+  test('tool-intent non-answers are auto-failed before judging', async () => {
+    const outDir = path.join(RUNS_ROOT, 'non-answer-autofail');
+    const config = makeConfig({ outDir });
+
+    generateTextMock.mockResolvedValue({
+      text: "We need to actually produce the tool calls JSON. Let's invoke search.",
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'non-answer-autofail-test',
+    });
+
+    expect(judgeMock).not.toHaveBeenCalled();
+
+    const { results } = await getStore();
+    const row = Array.from(results.values()).find(
+      (entry) =>
+        entry.runId === 'non-answer-autofail-test' && entry.questionId === 'Q1',
+    );
+    expect(row).toMatchObject({
+      status: 'done',
+      scoreOverall: 0,
+      autoFail: true,
+      autoFailReason: 'candidate described tool/search intent instead of providing a final answer',
+    });
+    expect(JSON.parse(row?.judgeParsedJson ?? '{}')).toMatchObject({
+      auto_fail: true,
+      overall_score: 0,
+      rubric_scores: { r1: 0 },
+    });
+  });
+
   test('ollama and openrouter candidate provider options stay provider-specific', async () => {
     const outDir = path.join(RUNS_ROOT, 'provider-options');
     const config = makeConfig({ outDir });

@@ -138,6 +138,7 @@ export const configSchema = z
         resume: z.boolean(),
         questionLimit: z.number().int().positive().nullable().optional(),
         categories: z.array(z.string().min(1)).nullable().optional(),
+        questionIds: z.array(z.string().min(1)).nullable().optional(),
         maxBudgetUsd: z.number().positive().nullable().optional(),
         retry: retryPolicySchema.optional(),
         concurrency: z
