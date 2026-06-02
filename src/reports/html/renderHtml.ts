@@ -179,6 +179,10 @@ function renderResultsSection(results: Record<string, unknown>[]): string {
                   typeof r.candidate_completion === 'string'
                     ? r.candidate_completion
                     : null;
+                const retrievalTrace =
+                  typeof r.retrieval_trace_json === 'string'
+                    ? safeJsonParse(r.retrieval_trace_json)
+                    : null;
 
                 const judgeParsed =
                   typeof r.judge_parsed_json === 'string'
@@ -206,6 +210,7 @@ function renderResultsSection(results: Record<string, unknown>[]): string {
                       status,
                     )} score=${escapeHtml(overall)} auto_fail=${escapeHtml(autoFail)}</summary>
                     ${prompt ? `<h3>Prompt</h3><pre>${escapeHtml(prompt)}</pre>` : ''}
+                    ${retrievalTrace ? renderRetrievalTrace(retrievalTrace) : ''}
                     ${candidate ? `<h3>Candidate</h3><pre>${escapeHtml(candidate)}</pre>` : ''}
                     ${judgeNotes ? `<h3>Judge notes</h3><pre>${escapeHtml(judgeNotes)}</pre>` : ''}
                     ${rubricScores ? `<h3>Judge rubric_scores</h3><pre>${escapeHtml(JSON.stringify(rubricScores, null, 2))}</pre>` : ''}
@@ -220,6 +225,28 @@ function renderResultsSection(results: Record<string, unknown>[]): string {
       })
       .join('\n')}
   `.trim();
+}
+
+function renderRetrievalTrace(trace: unknown): string {
+  if (!isObjectRecord(trace)) return '';
+  const mode = typeof trace.mode === 'string' ? trace.mode : 'unknown';
+  const searches = Array.isArray(trace.searches) ? trace.searches : [];
+  const reads = Array.isArray(trace.reads) ? trace.reads : [];
+  const titles = reads
+    .map((read) =>
+      isObjectRecord(read) && typeof read.title === 'string' ? read.title : null,
+    )
+    .filter((title): title is string => Boolean(title));
+  return `
+    <h3>Wiki retrieval</h3>
+    <div class="grid">
+      ${row('mode', mode)}
+      ${row('searches', String(searches.length))}
+      ${row('sources read', String(reads.length))}
+      ${titles.length > 0 ? row('source titles', titles.join(', ')) : ''}
+    </div>
+    <pre>${escapeHtml(JSON.stringify(trace, null, 2))}</pre>
+  `;
 }
 
 function safeJsonParse(raw: string): unknown {

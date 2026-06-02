@@ -362,6 +362,7 @@ async function exportMdCommand(
     answer: normalizeText(row.candidate_completion),
     candidatePrompt: normalizeText(row.candidate_prompt),
     candidateMetrics: normalizeJson(row.candidate_metrics_json),
+    retrievalTrace: normalizeJson(row.retrieval_trace_json),
     scoreOverall: row.score_overall,
     scoreRubric: normalizeJson(row.score_rubric_json),
     autoFail: typeof row.auto_fail === 'number' ? row.auto_fail === 1 : null,

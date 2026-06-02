@@ -71,6 +71,26 @@ routers:
   #     maxTokens: 4000
   #     timeoutMs: 120000
 
+# Optional local Wikipedia retrieval service. Direct runs do not require this block.
+# Wiki candidate modes are configured per model with `candidateMode`.
+# wiki:
+#   enabled: true
+#   service:
+#     baseUrl: 'http://127.0.0.1:8765'
+#     timeoutMs: 5000
+#   corpus:
+#     manifestId: 'wikipedia-markdown-local'
+#     manifestPath: './data/wiki/full/manifest.json'
+#   index:
+#     manifestId: 'wikipedia-markdown-local'
+#     manifestPath: './data/wiki/full/manifest.json'
+#   limits:
+#     searchTopK: 5
+#     readMaxChars: 4000
+#     contextMaxChars: 12000
+#     maxToolCalls: 8
+#     maxTurns: 6
+
 models:
   # - id: 'liquid/lfm-2.2-6b'
   #   router: 'openrouter'
@@ -80,6 +100,13 @@ models:
     router: 'openrouter'
     model: 'liquid/lfm2-8b-a1b'
     provider: 'liquid'
+    candidateMode: 'direct'
+  # Repeat a hosted model with a wiki mode after enabling the wiki block above.
+  # - id: 'liquid/lfm2-8b-a1b-rag-hybrid'
+  #   router: 'openrouter'
+  #   model: 'liquid/lfm2-8b-a1b'
+  #   provider: 'liquid'
+  #   candidateMode: 'rag-hybrid'
   - id: 'openai/gpt-oss-20b'
     router: 'openrouter'
     model: 'openai/gpt-oss-20b'

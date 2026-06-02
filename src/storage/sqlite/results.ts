@@ -9,6 +9,7 @@ export type UpsertResultParams = {
   candidatePrompt?: string;
   candidateCompletion?: string;
   candidateMetricsJson?: string;
+  retrievalTraceJson?: string;
   judgeRequestJson?: string;
   judgeResponseJson?: string;
   judgeParsedJson?: string;
@@ -45,6 +46,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     INSERT INTO model_results (
       run_id, model_id, question_id,
       candidate_prompt, candidate_completion, candidate_metrics_json,
+      retrieval_trace_json,
       judge_request_json, judge_response_json, judge_parsed_json,
       score_overall, score_rubric_json,
       auto_fail, auto_fail_reason,
@@ -52,6 +54,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     ) VALUES (
       @run_id, @model_id, @question_id,
       @candidate_prompt, @candidate_completion, @candidate_metrics_json,
+      @retrieval_trace_json,
       @judge_request_json, @judge_response_json, @judge_parsed_json,
       @score_overall, @score_rubric_json,
       @auto_fail, @auto_fail_reason,
@@ -61,6 +64,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
       candidate_prompt = COALESCE(excluded.candidate_prompt, model_results.candidate_prompt),
       candidate_completion = COALESCE(excluded.candidate_completion, model_results.candidate_completion),
       candidate_metrics_json = COALESCE(excluded.candidate_metrics_json, model_results.candidate_metrics_json),
+      retrieval_trace_json = COALESCE(excluded.retrieval_trace_json, model_results.retrieval_trace_json),
       judge_request_json = COALESCE(excluded.judge_request_json, model_results.judge_request_json),
       judge_response_json = COALESCE(excluded.judge_response_json, model_results.judge_response_json),
       judge_parsed_json = COALESCE(excluded.judge_parsed_json, model_results.judge_parsed_json),
@@ -78,6 +82,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     candidate_prompt: p.candidatePrompt ?? null,
     candidate_completion: p.candidateCompletion ?? null,
     candidate_metrics_json: p.candidateMetricsJson ?? null,
+    retrieval_trace_json: p.retrievalTraceJson ?? null,
     judge_request_json: p.judgeRequestJson ?? null,
     judge_response_json: p.judgeResponseJson ?? null,
     judge_parsed_json: p.judgeParsedJson ?? null,

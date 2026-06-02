@@ -34,6 +34,7 @@ vi.mock('../src/core/runner/persistence', () => {
     questionId: string;
     status: string;
     candidateMetricsJson?: string | null;
+    retrievalTraceJson?: string | null;
     candidatePrompt?: string | null;
     candidateCompletion?: string | null;
     judgeParsedJson?: string | null;
@@ -63,6 +64,7 @@ vi.mock('../src/core/runner/persistence', () => {
           score_overall: number | null;
           auto_fail: number | null;
           candidate_metrics_json: string | null;
+          retrieval_trace_json: string | null;
           category: string | null;
           difficulty: string | null;
         }> = [];
@@ -77,6 +79,7 @@ vi.mock('../src/core/runner/persistence', () => {
             score_overall: typeof row.scoreOverall === 'number' ? row.scoreOverall : null,
             auto_fail: row.autoFail ? 1 : 0,
             candidate_metrics_json: row.candidateMetricsJson ?? null,
+            retrieval_trace_json: row.retrievalTraceJson ?? null,
             category: q?.category ?? null,
             difficulty: q?.difficulty ?? null,
           });
@@ -112,6 +115,7 @@ vi.mock('../src/core/runner/persistence', () => {
         }
       };
       preserve('candidateMetricsJson');
+      preserve('retrievalTraceJson');
       preserve('candidatePrompt');
       preserve('candidateCompletion');
       preserve('judgeParsedJson');
@@ -135,6 +139,7 @@ vi.mock('../src/core/runner/persistence', () => {
         auto_fail_reason: string | null;
         status: string;
         candidate_metrics_json: string | null;
+        retrieval_trace_json: string | null;
         candidate_prompt: string | null;
         candidate_completion: string | null;
         judge_parsed_json: string | null;
@@ -156,6 +161,7 @@ vi.mock('../src/core/runner/persistence', () => {
           auto_fail_reason: row.autoFailReason ?? null,
           status: row.status,
           candidate_metrics_json: row.candidateMetricsJson ?? null,
+          retrieval_trace_json: row.retrievalTraceJson ?? null,
           candidate_prompt: row.candidatePrompt ?? null,
           candidate_completion: row.candidateCompletion ?? null,
           judge_parsed_json: row.judgeParsedJson ?? null,

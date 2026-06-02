@@ -7,3 +7,7 @@ dist/
 .DS_Store
 *.gguf
 tmp
+target/
+data/wiki/
+indexes/
+qdrant_storage/

@@ -1,15 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PQueue from 'p-queue';
-import { generateText } from 'ai';
+import { generateText, stepCountIs } from 'ai';
 import type { LanguageModel } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
 import type { ApocbenchConfig } from '../config/schema';
+import { isAgentCandidateMode, isWikiCandidateMode } from '../config/schema';
 import type { DatasetLine } from '../dataset/schema';
 import { buildCandidatePrompt } from '../prompts/candidatePrompt';
 import { buildJudgePrompt } from '../prompts/judgePrompt';
 import { CANDIDATE_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT } from '../prompts/systemPrompts';
+import {
+  buildWikiGroundedCandidatePrompt,
+  type RetrievalTrace,
+} from '../wiki/rag';
+import { createWikiAgentContext } from '../wiki/agent';
+import {
+  checkWikiReadiness,
+  createWikiClientFromConfig,
+  type WikiClient,
+} from '../wiki/client';
 import { aggregateModel } from '../scoring/aggregate';
 import { computeOverallScore, judgeWithRubricCompletenessRetry } from './judge';
 import { makeRunId, promptTemplateHash } from './runId';
@@ -147,6 +158,7 @@ type RunContext = {
   retryPolicy: RetryPolicy;
   judgeModel: LanguageModel;
   resumeMode: boolean;
+  wikiClient?: WikiClient;
 };
 
 type ModelEntry = ApocbenchConfig['models'][number];
@@ -578,6 +590,8 @@ async function handleCandidateQuestion(params: {
   });
 
   const candidatePrompt = buildCandidatePrompt(question);
+  let effectiveCandidatePrompt = candidatePrompt;
+  let retrievalTrace: RetrievalTrace | undefined;
   const candidateStart = Date.now();
 
   // These variables capture only primitive/normalized data to avoid retaining
@@ -587,6 +601,37 @@ async function handleCandidateQuestion(params: {
   let lastCandidateCostUsd: number | undefined;
 
   try {
+    const candidateMode = modelEntry.candidateMode ?? 'direct';
+    let agentTools: GenerateTextArgs['tools'] | undefined;
+    let agentStopWhen: GenerateTextArgs['stopWhen'] | undefined;
+    if (isWikiCandidateMode(candidateMode)) {
+      if (!config.wiki || !ctx.wikiClient) {
+        throw new Error(`missing wiki config/client for candidateMode: ${candidateMode}`);
+      }
+      if (isAgentCandidateMode(candidateMode)) {
+        const wikiAgent = createWikiAgentContext({
+          basePrompt: candidatePrompt,
+          mode: candidateMode,
+          wiki: config.wiki,
+          client: ctx.wikiClient,
+        });
+        effectiveCandidatePrompt = wikiAgent.prompt;
+        retrievalTrace = wikiAgent.trace;
+        agentTools = wikiAgent.tools;
+        agentStopWhen = stepCountIs(config.wiki.limits.maxTurns ?? 6);
+      } else {
+        const wikiContext = await buildWikiGroundedCandidatePrompt({
+          question,
+          basePrompt: candidatePrompt,
+          mode: candidateMode,
+          wiki: config.wiki,
+          client: ctx.wikiClient,
+        });
+        effectiveCandidatePrompt = wikiContext.prompt;
+        retrievalTrace = wikiContext.trace;
+      }
+    }
+
     const routerDefaults = getCandidateRouterDefaults(config, modelEntry);
     const candidateResult = await generateTextWithRetry({
       timeoutMs:
@@ -598,8 +643,10 @@ async function handleCandidateQuestion(params: {
         model: candidateModel,
         messages: [
           { role: 'system', content: CANDIDATE_SYSTEM_PROMPT },
-          { role: 'user', content: candidatePrompt },
+          { role: 'user', content: effectiveCandidatePrompt },
         ] as TextMessages,
+        tools: agentTools,
+        stopWhen: agentStopWhen,
         temperature:
           modelEntry.params?.temperature ??
           routerDefaults.temperature ??
@@ -681,7 +728,8 @@ async function handleCandidateQuestion(params: {
       runId,
       modelId: modelEntry.id,
       questionId: question.id,
-      candidatePrompt,
+      candidatePrompt: effectiveCandidatePrompt,
+      retrievalTraceJson: retrievalTrace ? JSON.stringify(retrievalTrace) : undefined,
       candidateCompletion: candidateText,
       candidateMetricsJson: JSON.stringify(metrics),
       status: 'candidate_done',
@@ -718,7 +766,8 @@ async function handleCandidateQuestion(params: {
       runId,
       modelId: modelEntry.id,
       questionId: question.id,
-      candidatePrompt,
+      candidatePrompt: effectiveCandidatePrompt,
+      retrievalTraceJson: retrievalTrace ? JSON.stringify(retrievalTrace) : undefined,
       status: 'candidate_failed',
       errorJson: JSON.stringify({ message }),
     });
@@ -909,6 +958,14 @@ export async function runBenchmark(params: {
 
   const judgeModel = deps.resolveJudgeModel(config);
   const models = resolveModels({ config, selectedModelIds });
+  const needsWiki = models.some((model) => isWikiCandidateMode(model.candidateMode ?? 'direct'));
+  const wikiClient = needsWiki && config.wiki ? createWikiClientFromConfig(config.wiki) : undefined;
+  if (needsWiki) {
+    if (!config.wiki || !wikiClient) {
+      throw new Error('missing wiki config for wiki-enabled candidate modes');
+    }
+    await checkWikiReadiness(wikiClient, config.wiki);
+  }
   const { judgeQueue, perModelQueue } = createQueues({ config, models });
 
   const maxBudgetUsd = config.run.maxBudgetUsd ?? null;
@@ -924,6 +981,7 @@ export async function runBenchmark(params: {
     retryPolicy,
     judgeModel,
     resumeMode,
+    wikiClient,
   };
 
   const tasks = scheduleCandidateTasks({

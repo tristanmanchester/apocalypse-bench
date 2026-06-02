@@ -1,0 +1,79 @@
+run:
+  name: 'wiki-smoke'
+  datasetPaths:
+    - './data/question_bank'
+  outDir: './runs'
+  resume: true
+  questionLimit: 2
+  categories: null
+  maxBudgetUsd: null
+  concurrency:
+    candidate: 1
+    judge: 1
+
+candidate:
+  maxTokens: 4000
+
+judge:
+  router: 'openrouter'
+  model: 'xiaomi/mimo-v2-flash:free'
+  provider: 'xiaomi/fp8'
+  temperature: null
+  maxTokens: 16000
+  structured: true
+  reasoning: true
+
+routers:
+  ollama:
+    baseUrl: 'http://localhost:11434/api'
+    apiKeyEnv: null
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 120000
+  openrouter:
+    baseUrl: 'https://openrouter.ai/api/v1'
+    apiKeyEnv: 'OPENROUTER_API_KEY'
+    headers:
+      HTTP-Referer: 'https://github.com/yourname/apocalypse-bench'
+      X-Title: 'apocalypse-bench'
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 120000
+
+wiki:
+  enabled: true
+  service:
+    baseUrl: 'http://127.0.0.1:8765'
+    timeoutMs: 10000
+  corpus:
+    manifestId: '03873037ca5d577c9142d313ea437762828033188d2f06bbb58e5bb3704a1789'
+    manifestPath: './data/wiki/full/manifest.json'
+  index:
+    # The Rust fixture/full service reports the same manifest id for corpus and index.
+    manifestId: '03873037ca5d577c9142d313ea437762828033188d2f06bbb58e5bb3704a1789'
+    manifestPath: './data/wiki/full/manifest.json'
+  limits:
+    searchTopK: 5
+    readMaxChars: 4000
+    contextMaxChars: 12000
+    maxToolCalls: 8
+    maxTurns: 6
+
+models:
+  - id: 'liquid/lfm2-8b-a1b-direct'
+    router: 'openrouter'
+    model: 'liquid/lfm2-8b-a1b'
+    provider: 'liquid'
+    candidateMode: 'direct'
+  - id: 'liquid/lfm2-8b-a1b-rag-bm25'
+    router: 'openrouter'
+    model: 'liquid/lfm2-8b-a1b'
+    provider: 'liquid'
+    candidateMode: 'rag-bm25'
+  - id: 'liquid/lfm2-8b-a1b-rag-hybrid'
+    router: 'openrouter'
+    model: 'liquid/lfm2-8b-a1b'
+    provider: 'liquid'
+    candidateMode: 'rag-hybrid'

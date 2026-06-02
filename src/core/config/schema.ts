@@ -50,6 +50,61 @@ const openRouterRoutingSchema = z
   })
   .strict();
 
+const candidateModeSchema = z
+  .enum([
+    'direct',
+    'rag-bm25',
+    'rag-dense',
+    'rag-hybrid',
+    'agent-bm25',
+    'agent-dense',
+    'agent-hybrid',
+    'agent-rg',
+    'agent-literal',
+  ])
+  .default('direct');
+
+export function isWikiCandidateMode(mode: z.infer<typeof candidateModeSchema>): boolean {
+  return mode !== 'direct';
+}
+
+export function isAgentCandidateMode(mode: z.infer<typeof candidateModeSchema>): boolean {
+  return mode.startsWith('agent-');
+}
+
+const wikiConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    service: z
+      .object({
+        baseUrl: z.string().min(1),
+        timeoutMs: z.number().int().positive().optional(),
+      })
+      .strict(),
+    corpus: z
+      .object({
+        manifestId: z.string().min(1),
+        manifestPath: z.string().min(1).optional(),
+      })
+      .strict(),
+    index: z
+      .object({
+        manifestId: z.string().min(1),
+        manifestPath: z.string().min(1).optional(),
+      })
+      .strict(),
+    limits: z
+      .object({
+        searchTopK: z.number().int().positive(),
+        readMaxChars: z.number().int().positive(),
+        contextMaxChars: z.number().int().positive(),
+        maxToolCalls: z.number().int().positive().optional(),
+        maxTurns: z.number().int().positive().optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export function toOpenRouterProviderParam(
   routing?: z.infer<typeof openRouterRoutingSchema>,
 ): Record<string, unknown> | undefined {
@@ -151,6 +206,8 @@ export const configSchema = z
       })
       .strict(),
 
+    wiki: wikiConfigSchema.optional(),
+
     models: z
       .array(
         z
@@ -159,6 +216,7 @@ export const configSchema = z
             router: z.enum(['ollama', 'openrouter', 'openai-compatible']),
             model: z.string().min(1),
             provider: z.string().min(1).optional(),
+            candidateMode: candidateModeSchema,
             params: requestDefaultsSchema.optional(),
             promptFormat: z.string().min(1).optional(),
             routing: openRouterRoutingSchema.optional(),
@@ -178,7 +236,20 @@ export const configSchema = z
         path: ['routers', 'openaiCompatible'],
       });
     }
+
+    const wikiModelIndex = config.models.findIndex((model) =>
+      isWikiCandidateMode(model.candidateMode),
+    );
+    if (wikiModelIndex !== -1 && !config.wiki) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Missing wiki config for models using wiki candidateMode.',
+        path: ['models', wikiModelIndex, 'candidateMode'],
+      });
+    }
   })
   .strict();
 
-export type ApocbenchConfig = z.infer<typeof configSchema>;
+export type ApocbenchConfig = z.input<typeof configSchema>;
+export type CandidateMode = z.infer<typeof candidateModeSchema>;
+export type WikiConfig = z.infer<typeof wikiConfigSchema>;

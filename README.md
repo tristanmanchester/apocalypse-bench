@@ -10,6 +10,10 @@ You’ve got a laptop, a pile of scrap, and exactly zero internet. The question 
 
 No browsing, no tools, no retrieval—just the model, the prompt, and the consequences.
 
+The optional Wikipedia retrieval track keeps that baseline intact and adds separate wiki-enabled
+conditions for local BM25, dense, hybrid, RAG, and agent-style runs. See
+[`docs/wiki-retrieval.md`](docs/wiki-retrieval.md) for setup.
+
 You can read my full writeup [here](https://www.crowlabs.tech/blog/apocalypse-bench).
 
 ## What’s in this repo
@@ -18,6 +22,8 @@ You can read my full writeup [here](https://www.crowlabs.tech/blog/apocalypse-be
 - **Dataset**: a JSON (JSONL) question bank in `data/question_bank/` is the single source of truth, loaded directly at runtime.
 - **Reports**: generates local HTML and Markdown exports for a run.
 - **Dashboard**: a Next.js app in `dashboard/` for exploring runs.
+- **Wiki retrieval track**: optional local Markdown Wikipedia indexing through the Rust
+  `wiki-search` tool, with retrieval traces persisted per result.
 
 ## Quick start
 

@@ -40,7 +40,8 @@ describe('sqlite migration path handling', () => {
 
   test('migrate reads the schema adjacent to the runtime module path', () => {
     const exec = vi.fn();
-    const db = { exec } as unknown as DbHandle;
+    const prepare = vi.fn(() => ({ all: () => [{ name: 'retrieval_trace_json' }] }));
+    const db = { exec, prepare } as unknown as DbHandle;
     const readFileSync = vi.spyOn(fs, 'readFileSync').mockReturnValue('create table x(id);');
 
     migrate(db);
@@ -52,5 +53,6 @@ describe('sqlite migration path handling', () => {
     );
     expect(encoding).toBe('utf8');
     expect(exec).toHaveBeenCalledWith('create table x(id);');
+    expect(prepare).toHaveBeenCalledWith('PRAGMA table_info(model_results)');
   });
 });

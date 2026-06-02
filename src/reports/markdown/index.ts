@@ -44,6 +44,7 @@ export type ExportModelResult = {
   answer?: string | null;
   candidatePrompt?: string | null;
   candidateMetrics?: Record<string, unknown> | null;
+  retrievalTrace?: Record<string, unknown> | null;
   scoreOverall?: number | null;
   scoreRubric?: Record<string, unknown> | null;
   autoFail?: boolean | null;

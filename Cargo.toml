@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/wiki-search"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "ISC"
