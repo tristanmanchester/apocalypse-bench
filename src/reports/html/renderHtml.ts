@@ -10,7 +10,10 @@ export function renderHtmlReport(params: {
     ? (params.results as Record<string, unknown>[])
     : [];
   const hasAnyResultDetails = results.some(
-    (r) => typeof r.prompt === 'string' || typeof r.candidate_completion === 'string',
+    (r) =>
+      typeof r.candidate_prompt === 'string' ||
+      typeof r.prompt === 'string' ||
+      typeof r.candidate_completion === 'string',
   );
 
   const models = Array.isArray(summaryJson?.models) ? summaryJson?.models : [];
@@ -91,6 +94,7 @@ export function renderHtmlReport(params: {
           <th class="num" title="% of completed questions flagged by judge (e.g. refusal, unsafe content) — scored as 0">auto-fail %</th>
           <th class="num" title="Median latency">p50 ms</th>
           <th class="num" title="90th percentile latency">p90 ms</th>
+          <th class="num" title="Wiki source reads recorded in retrieval traces">wiki reads</th>
         </tr>
       </thead>
       <tbody>
@@ -127,6 +131,7 @@ function renderResultsSection(results: Record<string, unknown>[]): string {
 
   const withDetails = results.filter(
     (r) =>
+      typeof r.candidate_prompt === 'string' ||
       typeof r.prompt === 'string' ||
       typeof r.candidate_completion === 'string' ||
       typeof r.judge_parsed_json === 'string',
@@ -174,7 +179,12 @@ function renderResultsSection(results: Record<string, unknown>[]): string {
                 const category = r.category ? String(r.category) : 'unknown';
                 const difficulty = r.difficulty ? String(r.difficulty) : 'unknown';
 
-                const prompt = typeof r.prompt === 'string' ? r.prompt : null;
+                const prompt =
+                  typeof r.candidate_prompt === 'string'
+                    ? r.candidate_prompt
+                    : typeof r.prompt === 'string'
+                      ? r.prompt
+                      : null;
                 const candidate =
                   typeof r.candidate_completion === 'string'
                     ? r.candidate_completion
@@ -299,6 +309,7 @@ function renderModelRow(m: Record<string, unknown>): string {
     typeof m.latencyMs === 'object' && m.latencyMs !== null
       ? (m.latencyMs as Record<string, unknown>)
       : {};
+  const retrieval = isObjectRecord(m.retrieval) ? m.retrieval : null;
   return `
     <tr>
       <td>${escapeHtml(String(m?.modelId ?? 'unknown'))}</td>
@@ -310,6 +321,7 @@ function renderModelRow(m: Record<string, unknown>): string {
       <td class="num">${fmtPct(m?.autoFailRate)}</td>
       <td class="num">${fmtMs(latency.medianMs)}</td>
       <td class="num">${fmtMs(latency.p90Ms)}</td>
+      <td class="num">${fmtInt(retrieval?.readCount)}</td>
     </tr>
   `.trim();
 }
@@ -370,6 +382,7 @@ function renderBreakdownTable(params: {
 function renderModelDetails(m: Record<string, unknown>): string {
   const categories = Array.isArray(m?.categoryBreakdown) ? m.categoryBreakdown : [];
   const difficulties = Array.isArray(m?.difficultyBreakdown) ? m.difficultyBreakdown : [];
+  const retrieval = isObjectRecord(m?.retrieval) ? m.retrieval : null;
 
   return `
     <details>
@@ -385,6 +398,7 @@ function renderModelDetails(m: Record<string, unknown>): string {
           ${row('autoFailRate', fmtPct(m?.autoFailRate))}
         </div>
       </div>
+      ${retrieval ? renderRetrievalSummary(retrieval) : ''}
       ${
         categories.length > 0
           ? `<h3>By category</h3>${renderBreakdownTable({ kind: 'category', rows: categories })}`
@@ -397,6 +411,34 @@ function renderModelDetails(m: Record<string, unknown>): string {
       }
     </details>
   `.trim();
+}
+
+function renderRetrievalSummary(retrieval: Record<string, unknown>): string {
+  const latency = isObjectRecord(retrieval.latencyMs) ? retrieval.latencyMs : {};
+  const titles = Array.isArray(retrieval.uniqueSourceTitles)
+    ? retrieval.uniqueSourceTitles.map((title) => String(title)).slice(0, 12)
+    : [];
+  return `
+    <h3>Wiki retrieval summary</h3>
+    <div class="card">
+      <div class="grid">
+        ${row('traceCount', fmtInt(retrieval.traceCount))}
+        ${row('modes', formatModes(retrieval.modes))}
+        ${row('searchCount', fmtInt(retrieval.searchCount))}
+        ${row('readCount', fmtInt(retrieval.readCount))}
+        ${row('retrieval p50', fmtMs(latency.medianMs))}
+        ${row('retrieval p90', fmtMs(latency.p90Ms))}
+        ${titles.length > 0 ? row('source titles', titles.join(', ')) : ''}
+      </div>
+    </div>
+  `.trim();
+}
+
+function formatModes(value: unknown): string | null {
+  if (!isObjectRecord(value)) return null;
+  const entries = Object.entries(value).sort((a, b) => a[0].localeCompare(b[0]));
+  if (entries.length === 0) return null;
+  return entries.map(([mode, count]) => `${mode}: ${fmtInt(count)}`).join(', ');
 }
 
 function escapeHtml(s: string): string {

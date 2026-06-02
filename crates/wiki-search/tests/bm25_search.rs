@@ -26,11 +26,22 @@ fn bm25_search_returns_stable_chunk_pointer() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let hits = json["hits"].as_array().unwrap();
     assert!(!hits.is_empty());
-    assert_eq!(hits[0]["title"], "Water purification");
-    assert!(hits[0]["chunk_id"]
+    let hit = &hits[0];
+    assert_eq!(json["mode"], "bm25");
+    assert_eq!(json["query"], "boiling disinfect water");
+    assert!(json["latencyMs"].is_number());
+    assert_eq!(hit["mode"], "bm25");
+    assert!(hit["score"].is_number());
+    assert_eq!(hit["article_id"], "water-purification");
+    assert!(hit["chunk_id"]
         .as_str()
         .unwrap()
         .starts_with("water-purification:"));
+    assert_eq!(hit["title"], "Water purification");
+    assert!(hit["heading_path"].is_array());
+    assert!(hit["url"].as_str().unwrap().starts_with("https://"));
+    assert!(hit["snippet"].as_str().unwrap().contains("water"));
+    assert_eq!(hit["sources"], serde_json::json!(["bm25"]));
 }
 
 fn ingest(name: &str) -> PathBuf {

@@ -74,9 +74,14 @@ export class WikiClient {
     path: string,
     request: WikiSearchRequest,
   ): Promise<WikiSearchResponse> {
-    const raw = await this.post<{ query: string; limit?: number }, RawWikiSearchResponse>(path, {
+    const raw = await this.post<
+      { query: string; limit?: number; articleId?: string; chunkId?: string },
+      RawWikiSearchResponse
+    >(path, {
       query: request.query,
       limit: request.topK,
+      articleId: request.articleId,
+      chunkId: request.chunkId,
     });
     return normalizeSearchResponse(raw);
   }
@@ -126,12 +131,15 @@ type RawWikiSearchResponse = WikiSearchResponse | {
   hits: Array<{
     mode: WikiSearchResponse['mode'];
     score?: number | null;
+    bm25_score?: number | null;
+    dense_score?: number | null;
     article_id?: string;
     chunk_id?: string;
     title?: string;
     heading_path?: string[];
     url?: string;
     snippet?: string;
+    sources?: string[];
   }>;
   latencyMs?: number;
 };
@@ -164,6 +172,9 @@ function normalizeSearchResponse(raw: RawWikiSearchResponse): WikiSearchResponse
         },
         mode: hit.mode,
         score: hit.score ?? undefined,
+        bm25Score: hit.bm25_score ?? undefined,
+        denseScore: hit.dense_score ?? undefined,
+        sources: hit.sources,
         snippet: hit.snippet ?? '',
       };
     }),

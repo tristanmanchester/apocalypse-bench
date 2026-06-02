@@ -13,7 +13,7 @@ export type LoadConfigResult = {
 function parseConfigFile(contents: string, absolutePath: string): unknown {
   const ext = path.extname(absolutePath).toLowerCase();
   if (ext === '.json') return JSON.parse(contents);
-  return YAML.parse(contents, { strict: true });
+  return YAML.parse(contents, { strict: true, merge: true });
 }
 
 export function loadConfig(configPath: string): LoadConfigResult {

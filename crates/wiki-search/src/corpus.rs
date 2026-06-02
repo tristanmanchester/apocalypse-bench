@@ -7,6 +7,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+const MAX_CHUNK_CHARS: usize = 6_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceArticle {
     pub id: String,
@@ -99,7 +101,7 @@ pub fn ingest_jsonl(input: &Path, out_dir: &Path) -> anyhow::Result<CorpusManife
         source_path: input.display().to_string(),
         article_count,
         chunk_count,
-        chunker: "markdown-heading-v1".to_string(),
+        chunker: "markdown-heading-v2-size-bounded-6000".to_string(),
         bm25_index_dir: "tantivy".to_string(),
     };
     fs::write(
@@ -112,20 +114,6 @@ pub fn ingest_jsonl(input: &Path, out_dir: &Path) -> anyhow::Result<CorpusManife
 pub fn load_manifest(index_root: &Path) -> anyhow::Result<CorpusManifest> {
     let raw = fs::read_to_string(manifest_path(index_root))?;
     Ok(serde_json::from_str(&raw)?)
-}
-
-pub fn load_chunks(index_root: &Path) -> anyhow::Result<Vec<ChunkRecord>> {
-    let file = File::open(chunks_path(index_root))?;
-    let reader = BufReader::new(file);
-    let mut chunks = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        chunks.push(serde_json::from_str(&line)?);
-    }
-    Ok(chunks)
 }
 
 pub struct ChunkLine {
@@ -218,13 +206,14 @@ fn chunk_article(article: &SourceArticle) -> anyhow::Result<Vec<ChunkRecord>> {
         .unwrap_or(article.text.len());
     let lead = article.text[..lead_end].trim();
     if !lead.is_empty() {
-        chunks.push(make_chunk(
+        push_bounded_chunks(
+            &mut chunks,
             article,
             "lead",
             Vec::new(),
             ChunkKind::Lead,
             lead,
-        ));
+        );
     }
 
     headings.push((article.text.len(), 0, String::new()));
@@ -245,16 +234,103 @@ fn chunk_article(article: &SourceArticle) -> anyhow::Result<Vec<ChunkRecord>> {
         }
         let heading_path: Vec<String> = stack.iter().map(|(_, h)| h.clone()).collect();
         let slug = stable_slug(&heading_path.join("-"));
-        chunks.push(make_chunk(
+        push_bounded_chunks(
+            &mut chunks,
             article,
             &slug,
             heading_path,
             ChunkKind::Section,
             section,
-        ));
+        );
     }
 
     Ok(chunks)
+}
+
+fn push_bounded_chunks(
+    chunks: &mut Vec<ChunkRecord>,
+    article: &SourceArticle,
+    suffix: &str,
+    heading_path: Vec<String>,
+    chunk_kind: ChunkKind,
+    text: &str,
+) {
+    let parts = split_bounded(text, MAX_CHUNK_CHARS);
+    let multi_part = parts.len() > 1;
+    for (idx, part) in parts.into_iter().enumerate() {
+        let chunk_suffix = if multi_part {
+            format!("{suffix}-part-{}", idx + 1)
+        } else {
+            suffix.to_string()
+        };
+        chunks.push(make_chunk(
+            article,
+            &chunk_suffix,
+            heading_path.clone(),
+            chunk_kind.clone(),
+            &part,
+        ));
+    }
+}
+
+fn split_bounded(text: &str, max_chars: usize) -> Vec<String> {
+    if text.chars().count() <= max_chars {
+        return vec![text.to_string()];
+    }
+
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for paragraph in text.split("\n\n") {
+        let paragraph_chars = paragraph.chars().count();
+        let current_chars = current.chars().count();
+        let separator_chars = usize::from(!current.is_empty()) * 2;
+        if current_chars + separator_chars + paragraph_chars <= max_chars {
+            if !current.is_empty() {
+                current.push_str("\n\n");
+            }
+            current.push_str(paragraph);
+            continue;
+        }
+
+        if !current.is_empty() && paragraph_chars <= max_chars {
+            parts.push(current);
+            current = String::new();
+        }
+
+        if paragraph_chars <= max_chars {
+            current.push_str(paragraph);
+        } else {
+            let mut chars = paragraph.chars();
+            if !current.is_empty() {
+                current.push_str("\n\n");
+                while current.chars().count() < max_chars {
+                    let Some(ch) = chars.next() else {
+                        break;
+                    };
+                    current.push(ch);
+                }
+                parts.push(current);
+                current = String::new();
+            }
+
+            let mut chunk = String::new();
+            for ch in chars {
+                if chunk.chars().count() == max_chars {
+                    parts.push(chunk);
+                    chunk = String::new();
+                }
+                chunk.push(ch);
+            }
+            if !chunk.is_empty() {
+                current = chunk;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 fn make_chunk(
@@ -287,4 +363,37 @@ fn stable_slug(input: &str) -> String {
         }
     }
     out.trim_matches('-').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_sections_split_into_stable_bounded_chunks() {
+        let article = SourceArticle {
+            id: "long-article".to_string(),
+            url: String::new(),
+            title: "Long Article".to_string(),
+            abstract_text: None,
+            date_created: None,
+            text: format!(
+                "Lead text.\n\n## Procedure\n\n{}",
+                "a".repeat(MAX_CHUNK_CHARS + 10)
+            ),
+        };
+
+        let chunks = chunk_article(&article).unwrap();
+        let section_chunks = chunks
+            .iter()
+            .filter(|chunk| matches!(chunk.chunk_kind, ChunkKind::Section))
+            .collect::<Vec<_>>();
+
+        assert_eq!(section_chunks.len(), 2);
+        assert_eq!(section_chunks[0].chunk_id, "long-article:procedure-part-1");
+        assert_eq!(section_chunks[1].chunk_id, "long-article:procedure-part-2");
+        assert!(section_chunks
+            .iter()
+            .all(|chunk| chunk.text.chars().count() <= MAX_CHUNK_CHARS));
+    }
 }

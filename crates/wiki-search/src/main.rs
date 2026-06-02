@@ -28,6 +28,10 @@ enum Command {
         #[arg(long)]
         index: PathBuf,
     },
+    Optimize {
+        #[arg(long)]
+        index: PathBuf,
+    },
     Search {
         #[arg(long)]
         index: PathBuf,
@@ -40,7 +44,9 @@ enum Command {
         #[arg(long)]
         index: PathBuf,
         #[arg(long)]
-        chunk_id: String,
+        chunk_id: Option<String>,
+        #[arg(long)]
+        article_id: Option<String>,
     },
     Serve {
         #[arg(long)]
@@ -66,6 +72,11 @@ async fn main() -> anyhow::Result<()> {
             bm25::build_index(&index, &manifest)?;
             println!("{}", serde_json::to_string_pretty(&manifest)?);
         }
+        Command::Optimize { index } => {
+            let report = bm25::optimize_index(&index)
+                .with_context(|| format!("optimizing Tantivy index at {}", index.display()))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::Search {
             index,
             query,
@@ -75,9 +86,19 @@ async fn main() -> anyhow::Result<()> {
             let response = state.search_bm25(&query, limit)?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Command::Read { index, chunk_id } => {
+        Command::Read {
+            index,
+            chunk_id,
+            article_id,
+        } => {
             let state = service::WikiState::open(index)?;
-            let response = state.read_chunk(&chunk_id, None)?;
+            let response = if let Some(chunk_id) = chunk_id {
+                state.read_chunk(&chunk_id, None)?
+            } else if let Some(article_id) = article_id {
+                state.read_article(&article_id, None)?
+            } else {
+                anyhow::bail!("provide --chunk-id or --article-id");
+            };
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Serve { index, listen } => {

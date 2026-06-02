@@ -5,6 +5,8 @@ dashboard/node_modules
 runs/
 dist/
 .DS_Store
+__pycache__/
+*.pyc
 *.gguf
 tmp
 target/

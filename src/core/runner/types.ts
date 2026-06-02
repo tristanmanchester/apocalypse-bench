@@ -37,12 +37,6 @@ export function buildJudgeOutputSchemaWithRubricIds(rubricIds: string[]): z.ZodT
     .strict();
 }
 
-export type CandidateMetrics = {
-  latencyMs: number;
-  usage?: unknown;
-  costUsd?: number;
-};
-
 export type AggregateLatencyStats = {
   medianMs: number | null;
   meanMs: number | null;

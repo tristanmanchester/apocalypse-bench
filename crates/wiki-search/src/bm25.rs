@@ -3,16 +3,18 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::Context;
+use serde::Serialize;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Field, Schema, Value, STORED, TEXT};
-use tantivy::{doc, Index, TantivyDocument};
+use tantivy::{doc, Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
 
 use crate::corpus::{self, ChunkRecord, CorpusManifest};
 use crate::service::SearchHit;
 
 pub struct WikiIndex {
-    index: Index,
+    reader: IndexReader,
+    query_parser: QueryParser,
     schema: WikiSchema,
 }
 
@@ -27,26 +29,50 @@ struct WikiSchema {
     url: Field,
 }
 
+#[derive(Debug, Serialize)]
+pub struct OptimizeReport {
+    pub segments_before: usize,
+    pub segments_after: usize,
+}
+
 impl WikiIndex {
     pub fn open(index_root: &Path) -> anyhow::Result<Self> {
         let index = Index::open_in_dir(corpus::tantivy_path(index_root))?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         let schema = fields(&index.schema())?;
-        Ok(Self { index, schema })
+        let query_parser = query_parser(&index, &schema);
+        Ok(Self {
+            reader,
+            query_parser,
+            schema,
+        })
     }
 
     pub fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
-        let reader = self.index.reader()?;
-        let searcher = reader.searcher();
-        let query_parser = QueryParser::for_index(
-            &self.index,
-            vec![
-                self.schema.title,
-                self.schema.heading_path,
-                self.schema.body,
-            ],
-        );
-        let parsed = query_parser.parse_query(query)?;
+        let searcher = self.reader.searcher();
+        let parsed = self.query_parser.parse_query(query)?;
         let top_docs = searcher.search(&parsed, &TopDocs::with_limit(limit.max(1)))?;
+        self.hits_from_docs(top_docs)
+    }
+
+    pub fn literal_candidates(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchHit>> {
+        let searcher = self.reader.searcher();
+        let parsed = match self.query_parser.parse_query(&quoted_phrase(query)) {
+            Ok(parsed) => parsed,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let top_docs = searcher.search(&parsed, &TopDocs::with_limit(limit.max(1)))?;
+        self.hits_from_docs(top_docs)
+    }
+
+    fn hits_from_docs(
+        &self,
+        top_docs: Vec<(f32, tantivy::DocAddress)>,
+    ) -> anyhow::Result<Vec<SearchHit>> {
+        let searcher = self.reader.searcher();
         let mut hits = Vec::with_capacity(top_docs.len());
         for (score, address) in top_docs {
             let doc: TantivyDocument = searcher.doc(address)?;
@@ -64,6 +90,38 @@ impl WikiIndex {
         }
         Ok(hits)
     }
+}
+
+pub fn optimize_index(index_root: &Path) -> anyhow::Result<OptimizeReport> {
+    let index = Index::open_in_dir(corpus::tantivy_path(index_root))?;
+    let segment_ids = index.searchable_segment_ids()?;
+    let segments_before = segment_ids.len();
+    if segments_before <= 1 {
+        return Ok(OptimizeReport {
+            segments_before,
+            segments_after: segments_before,
+        });
+    }
+
+    let mut writer: IndexWriter<TantivyDocument> = index.writer(500_000_000)?;
+    writer.merge(&segment_ids).wait()?;
+    Ok(OptimizeReport {
+        segments_before,
+        segments_after: index.searchable_segment_ids()?.len(),
+    })
+}
+
+fn query_parser(index: &Index, schema: &WikiSchema) -> QueryParser {
+    let mut parser =
+        QueryParser::for_index(index, vec![schema.title, schema.heading_path, schema.body]);
+    parser.set_field_boost(schema.title, 3.0);
+    parser.set_field_boost(schema.heading_path, 2.0);
+    parser
+}
+
+fn quoted_phrase(query: &str) -> String {
+    let escaped = query.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 pub fn build_index(index_root: &Path, _manifest: &CorpusManifest) -> anyhow::Result<()> {

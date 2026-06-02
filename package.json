@@ -13,6 +13,7 @@
     "bench:lfm2.5": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx src/cli/index.tsx run -c apocbench-lfm2.5-deepseek.yml",
     "bench:model-pack": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx src/cli/index.tsx run -c apocbench-lfm2.5-deepseek.yml",
     "wiki:rust:test": "cargo test -p wiki-search",
+    "wiki:embed:test": "python3 -m unittest scripts/wiki_embed_test.py",
     "wiki:ingest:fixture": "cargo run -p wiki-search -- ingest --input crates/wiki-search/tests/fixtures/wiki-mini.jsonl --out data/wiki/fixture",
     "wiki:serve:fixture": "cargo run -p wiki-search -- serve --index data/wiki/fixture",
     "dataset:export": "tsx src/cli/exportDataset.ts",
@@ -33,6 +34,8 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "^1.0.39",
     "@ai-sdk/provider-utils": "^3.0.19",
+    "@earendil-works/pi-agent-core": "0.75.4",
+    "@earendil-works/pi-ai": "0.75.4",
     "@openrouter/ai-sdk-provider": "^1.5.4",
     "@stricli/core": "^1.2.4",
     "ai": "^5.0.116",
@@ -61,5 +64,10 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.50.0",
     "vitest": "^4.0.16"
+  },
+  "pnpm": {
+    "overrides": {
+      "@earendil-works/pi-ai": "0.75.4"
+    }
   }
 }

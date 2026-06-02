@@ -96,7 +96,7 @@ describe('wiki config schema', () => {
           id: 'm1-agent',
           router: 'ollama',
           model: 'llama3.2',
-          candidateMode: 'agent-hybrid',
+          candidateMode: 'agent-wiki',
         },
       ],
     });
@@ -106,7 +106,26 @@ describe('wiki config schema', () => {
     expect(result.data.wiki).toEqual(wiki);
     expect(result.data.models.map((model) => model.candidateMode)).toEqual([
       'direct',
-      'agent-hybrid',
+      'agent-wiki',
     ]);
+  });
+
+  test('rejects wiki candidate modes when wiki is explicitly disabled', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      wiki: { ...wiki, enabled: false },
+      models: [
+        {
+          id: 'm1-rag',
+          router: 'ollama',
+          model: 'llama3.2',
+          candidateMode: 'rag-bm25',
+        },
+      ],
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.path).toEqual(['wiki', 'enabled']);
   });
 });

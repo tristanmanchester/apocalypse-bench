@@ -14,12 +14,15 @@ export type WikiSearchHit = {
   score?: number;
   bm25Score?: number;
   denseScore?: number;
+  sources?: string[];
   snippet: string;
 };
 
 export type WikiSearchRequest = {
   query: string;
   topK?: number;
+  articleId?: string;
+  chunkId?: string;
 };
 
 export type WikiSearchResponse = {

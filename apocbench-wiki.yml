@@ -16,10 +16,9 @@ candidate:
 
 judge:
   router: 'openrouter'
-  model: 'xiaomi/mimo-v2-flash:free'
-  provider: 'xiaomi/fp8'
+  model: 'deepseek/deepseek-v4-flash'
   temperature: null
-  maxTokens: 16000
+  maxTokens: 4096
   structured: true
   reasoning: true
 
@@ -62,18 +61,245 @@ wiki:
     maxTurns: 6
 
 models:
-  - id: 'liquid/lfm2-8b-a1b-direct'
+  - &lfm25_model
+    id: 'lfm2.5-1.2b-thinking-direct'
     router: 'openrouter'
-    model: 'liquid/lfm2-8b-a1b'
-    provider: 'liquid'
+    model: 'liquid/lfm-2.5-1.2b-thinking:free'
     candidateMode: 'direct'
-  - id: 'liquid/lfm2-8b-a1b-rag-bm25'
-    router: 'openrouter'
-    model: 'liquid/lfm2-8b-a1b'
-    provider: 'liquid'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-rag-bm25'
     candidateMode: 'rag-bm25'
-  - id: 'liquid/lfm2-8b-a1b-rag-hybrid'
-    router: 'openrouter'
-    model: 'liquid/lfm2-8b-a1b'
-    provider: 'liquid'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-rag-hybrid'
     candidateMode: 'rag-hybrid'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &gemma26_model
+    id: 'gemma-4-26b-a4b-it-direct'
+    router: 'openrouter'
+    model: 'google/gemma-4-26b-a4b-it'
+    candidateMode: 'direct'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &gemma31_model
+    id: 'gemma-4-31b-it-direct'
+    router: 'openrouter'
+    model: 'google/gemma-4-31b-it'
+    candidateMode: 'direct'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &granite41_model
+    id: 'granite-4.1-8b-direct'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.1-8b'
+    candidateMode: 'direct'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-direct'
+    router: 'openrouter'
+    model: 'nvidia/nemotron-3-nano-30b-a3b'
+    candidateMode: 'direct'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &trinity_model
+    id: 'trinity-mini-direct'
+    router: 'openrouter'
+    model: 'arcee-ai/trinity-mini'
+    candidateMode: 'direct'
+  - <<: *trinity_model
+    id: 'trinity-mini-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *trinity_model
+    id: 'trinity-mini-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *trinity_model
+    id: 'trinity-mini-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *trinity_model
+    id: 'trinity-mini-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *trinity_model
+    id: 'trinity-mini-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *trinity_model
+    id: 'trinity-mini-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *trinity_model
+    id: 'trinity-mini-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &granite40_model
+    id: 'granite-4.0-h-micro-direct'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.0-h-micro'
+    candidateMode: 'direct'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &phi4_model
+    id: 'phi-4-mini-instruct-direct'
+    router: 'openrouter'
+    model: 'microsoft/phi-4-mini-instruct'
+    candidateMode: 'direct'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-agent-wiki'
+    candidateMode: 'agent-wiki'
+
+  - &gptoss_model
+    id: 'gpt-oss-20b-direct'
+    router: 'openrouter'
+    model: 'openai/gpt-oss-20b'
+    candidateMode: 'direct'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-rag-bm25'
+    candidateMode: 'rag-bm25'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-rag-dense'
+    candidateMode: 'rag-dense'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-rag-hybrid'
+    candidateMode: 'rag-hybrid'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-agent-bm25'
+    candidateMode: 'agent-bm25'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-agent-dense'
+    candidateMode: 'agent-dense'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-agent-hybrid'
+    candidateMode: 'agent-hybrid'
+  - <<: *gptoss_model
+    id: 'gpt-oss-20b-agent-wiki'
+    candidateMode: 'agent-wiki'

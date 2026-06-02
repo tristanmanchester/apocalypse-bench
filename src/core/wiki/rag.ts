@@ -21,6 +21,9 @@ export type RetrievalTrace = {
       headingPath?: string[];
       url?: string;
       score?: number;
+      bm25Score?: number;
+      denseScore?: number;
+      sources?: string[];
       snippet: string;
     }>;
     latencyMs?: number;
@@ -133,6 +136,7 @@ async function runSearch(params: {
       return params.client.literalSearch(request);
     case 'rag-hybrid':
     case 'agent-hybrid':
+    case 'agent-wiki':
       return params.client.hybridSearch(request);
     case 'direct':
       throw new Error('direct mode does not use wiki search');
@@ -170,6 +174,9 @@ function traceHit(hit: WikiSearchHit): RetrievalTrace['searches'][number]['hits'
     headingPath: hit.pointer.headingPath,
     url: hit.pointer.url,
     score: hit.score,
+    bm25Score: hit.bm25Score,
+    denseScore: hit.denseScore,
+    sources: hit.sources,
     snippet: hit.snippet,
   };
 }

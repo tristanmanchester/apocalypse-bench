@@ -76,6 +76,7 @@ export type DomainRenderCaseResult = {
   modelId: string;
   status: string;
   answer?: string | null;
+  retrievalTrace?: Record<string, unknown> | null;
   scoreOverall?: number | null;
   autoFail?: boolean | null;
   autoFailReason?: string | null;
@@ -111,6 +112,7 @@ export type ModelRenderCaseResult = {
   autoFail: string[];
   status: string;
   answer?: string | null;
+  retrievalTrace?: Record<string, unknown> | null;
   scoreOverall?: number | null;
   autoFailFlag?: boolean | null;
   autoFailReason?: string | null;
@@ -129,6 +131,7 @@ export type CaseRenderResult = {
   modelId: string;
   status: string;
   answer?: string | null;
+  retrievalTrace?: Record<string, unknown> | null;
   scoreOverall?: number | null;
   autoFail?: boolean | null;
   autoFailReason?: string | null;
@@ -184,7 +187,10 @@ export function renderRunIndexMd(params: RunIndexParams = {}): string {
     }
   }
 
-  return renderWithFrontMatter({ frontMatter: params.frontMatter, body: lines.join('\n') });
+  return renderWithFrontMatter({
+    frontMatter: params.frontMatter,
+    body: lines.join('\n'),
+  });
 }
 
 export function renderByDomainMd(params: DomainRenderParams): string {
@@ -210,8 +216,7 @@ export function renderByDomainMd(params: DomainRenderParams): string {
       lines.push('MISSING');
     } else {
       for (const item of caseItem.rubric) {
-        const weight =
-          typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
+        const weight = typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
         const maxScore =
           typeof item.maxScore === 'number' ? ` maxScore=${item.maxScore}` : '';
         lines.push(`- [${item.id}] ${item.text}${weight}${maxScore}`);
@@ -235,6 +240,7 @@ export function renderByDomainMd(params: DomainRenderParams): string {
           lines.push(`- auto_fail: ${result.autoFail}`);
         if (result.autoFailReason)
           lines.push(`- auto_fail_reason: ${result.autoFailReason}`);
+        renderRetrievalTrace(lines, result.retrievalTrace);
         lines.push('', renderTextBlock(result.answer ?? ''));
       }
     }
@@ -247,16 +253,23 @@ export function renderByDomainMd(params: DomainRenderParams): string {
         lines.push(`### ${result.modelId}`);
         const judgeJson = result.judgeParsed
           ? JSON.stringify(result.judgeParsed, null, 2)
-          : result.judgeRaw ?? '';
+          : (result.judgeRaw ?? '');
         lines.push(renderJsonBlock(judgeJson));
         if (result.error) {
-          lines.push('', 'Error:', renderJsonBlock(JSON.stringify(result.error, null, 2)));
+          lines.push(
+            '',
+            'Error:',
+            renderJsonBlock(JSON.stringify(result.error, null, 2)),
+          );
         }
       }
     }
   });
 
-  return renderWithFrontMatter({ frontMatter: params.frontMatter, body: lines.join('\n') });
+  return renderWithFrontMatter({
+    frontMatter: params.frontMatter,
+    body: lines.join('\n'),
+  });
 }
 
 export function renderByModelMd(params: ModelRenderParams): string {
@@ -281,8 +294,7 @@ export function renderByModelMd(params: ModelRenderParams): string {
       lines.push('MISSING');
     } else {
       for (const item of caseItem.rubric) {
-        const weight =
-          typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
+        const weight = typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
         const maxScore =
           typeof item.maxScore === 'number' ? ` maxScore=${item.maxScore}` : '';
         lines.push(`- [${item.id}] ${item.text}${weight}${maxScore}`);
@@ -299,20 +311,25 @@ export function renderByModelMd(params: ModelRenderParams): string {
       lines.push(`- score_overall: ${caseItem.scoreOverall}`);
     if (typeof caseItem.autoFailFlag === 'boolean')
       lines.push(`- auto_fail: ${caseItem.autoFailFlag}`);
-    if (caseItem.autoFailReason) lines.push(`- auto_fail_reason: ${caseItem.autoFailReason}`);
+    if (caseItem.autoFailReason)
+      lines.push(`- auto_fail_reason: ${caseItem.autoFailReason}`);
+    renderRetrievalTrace(lines, caseItem.retrievalTrace);
     lines.push('', renderTextBlock(caseItem.answer ?? ''));
 
     lines.push('## Judge');
     const judgeJson = caseItem.judgeParsed
       ? JSON.stringify(caseItem.judgeParsed, null, 2)
-      : caseItem.judgeRaw ?? '';
+      : (caseItem.judgeRaw ?? '');
     lines.push(renderJsonBlock(judgeJson));
     if (caseItem.error) {
       lines.push('', 'Error:', renderJsonBlock(JSON.stringify(caseItem.error, null, 2)));
     }
   });
 
-  return renderWithFrontMatter({ frontMatter: params.frontMatter, body: lines.join('\n') });
+  return renderWithFrontMatter({
+    frontMatter: params.frontMatter,
+    body: lines.join('\n'),
+  });
 }
 
 export function renderCaseMd(params: CaseRenderParams): string {
@@ -327,8 +344,7 @@ export function renderCaseMd(params: CaseRenderParams): string {
     lines.push('MISSING');
   } else {
     for (const item of params.rubric) {
-      const weight =
-        typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
+      const weight = typeof item.weight === 'number' ? ` weight=${item.weight}` : '';
       const maxScore =
         typeof item.maxScore === 'number' ? ` maxScore=${item.maxScore}` : '';
       lines.push(`- [${item.id}] ${item.text}${weight}${maxScore}`);
@@ -352,11 +368,13 @@ export function renderCaseMd(params: CaseRenderParams): string {
         lines.push(`- score_overall: ${result.scoreOverall}`);
       if (typeof result.autoFail === 'boolean')
         lines.push(`- auto_fail: ${result.autoFail}`);
-      if (result.autoFailReason) lines.push(`- auto_fail_reason: ${result.autoFailReason}`);
+      if (result.autoFailReason)
+        lines.push(`- auto_fail_reason: ${result.autoFailReason}`);
+      renderRetrievalTrace(lines, result.retrievalTrace);
       lines.push('', renderTextBlock(result.answer ?? ''));
       const judgeJson = result.judgeParsed
         ? JSON.stringify(result.judgeParsed, null, 2)
-        : result.judgeRaw ?? '';
+        : (result.judgeRaw ?? '');
       lines.push('## Judge', renderJsonBlock(judgeJson));
       if (result.error) {
         lines.push('', 'Error:', renderJsonBlock(JSON.stringify(result.error, null, 2)));
@@ -364,7 +382,10 @@ export function renderCaseMd(params: CaseRenderParams): string {
     }
   }
 
-  return renderWithFrontMatter({ frontMatter: params.frontMatter, body: lines.join('\n') });
+  return renderWithFrontMatter({
+    frontMatter: params.frontMatter,
+    body: lines.join('\n'),
+  });
 }
 
 export function slugify(value: string): string {
@@ -397,6 +418,33 @@ function renderJsonBlock(value: string): string {
   const normalized = normalizeNewlines(value).trim();
   if (!normalized) return 'MISSING';
   return `\`\`\`json\n${normalized}\n\`\`\``;
+}
+
+function renderRetrievalTrace(
+  lines: string[],
+  trace: Record<string, unknown> | null | undefined,
+): void {
+  if (!trace) return;
+  lines.push('', '#### Wiki retrieval');
+  const mode = typeof trace.mode === 'string' ? trace.mode : null;
+  if (mode) lines.push(`- mode: ${mode}`);
+
+  const searches = Array.isArray(trace.searches) ? trace.searches : [];
+  const reads = Array.isArray(trace.reads) ? trace.reads : [];
+  lines.push(`- searches: ${searches.length}`);
+  lines.push(`- sources_read: ${reads.length}`);
+
+  const titles = reads
+    .map((read) =>
+      read && typeof read === 'object' && !Array.isArray(read)
+        ? (read as Record<string, unknown>).title
+        : null,
+    )
+    .filter((title): title is string => typeof title === 'string' && title.length > 0);
+  if (titles.length > 0) {
+    lines.push(`- source_titles: ${Array.from(new Set(titles)).join(', ')}`);
+  }
+  lines.push(renderJsonBlock(JSON.stringify(trace, null, 2)));
 }
 
 function renderWithFrontMatter(params: RenderParams): string {

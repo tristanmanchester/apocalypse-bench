@@ -97,7 +97,12 @@ vi.mock('../src/core/runner/persistence', () => {
         questions.set(`${runId}:${q.id}`, q);
       }
     },
-    isRunResultDone: (_db: unknown, runId: string, modelId: string, questionId: string) => {
+    isRunResultDone: (
+      _db: unknown,
+      runId: string,
+      modelId: string,
+      questionId: string,
+    ) => {
       const row = results.get(keyFor(runId, modelId, questionId));
       return row?.status === 'done' && Boolean(row.judgeParsedJson);
     },
@@ -181,10 +186,7 @@ vi.mock('../src/core/runner/persistence', () => {
 const generateTextMock = vi.mocked(generateText);
 const judgeMock = vi.mocked(judgeWithRubricCompletenessRetry);
 
-const DATASET_ABS = path.resolve(
-  process.cwd(),
-  'data/question_bank/PH.jsonl',
-);
+const DATASET_ABS = path.resolve(process.cwd(), 'data/question_bank/PH.jsonl');
 
 const RUNS_ROOT = path.resolve(process.cwd(), 'runs-test-orchestrator');
 
@@ -287,6 +289,7 @@ afterEach(async () => {
   const store = await getStore();
   store.results.clear();
   store.questions.clear();
+  vi.unstubAllGlobals();
   fs.rmSync(RUNS_ROOT, { recursive: true, force: true });
 });
 
@@ -422,6 +425,70 @@ describe('runBenchmark regression coverage', () => {
       completionTokens: 4,
       totalTokens: 7,
     });
+  });
+
+  test('wiki runs fail readiness before generation when a required search capability is missing', async () => {
+    const outDir = path.join(RUNS_ROOT, 'wiki-capability');
+    const config: ApocbenchConfig = {
+      ...makeConfig({ outDir }),
+      wiki: {
+        enabled: true,
+        service: { baseUrl: 'http://127.0.0.1:8765' },
+        corpus: { manifestId: 'corpus-v1' },
+        index: { manifestId: 'index-v1' },
+        limits: {
+          searchTopK: 3,
+          readMaxChars: 1000,
+          contextMaxChars: 2000,
+          maxToolCalls: 4,
+          maxTurns: 3,
+        },
+      },
+      models: [
+        {
+          id: 'm1-rag-dense',
+          router: 'openrouter',
+          model: 'candidate-model',
+          candidateMode: 'rag-dense',
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              corpus: { manifestId: 'corpus-v1' },
+              index: { manifestId: 'index-v1' },
+              capabilities: ['bm25', 'literal'],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+
+    await expect(
+      runBenchmark({
+        config,
+        configPath: 'x',
+        datasetPath: 'x',
+        datasetAbsolutePath: DATASET_ABS,
+        questions: makeQuestions(1),
+        deps: {
+          resolveModel: () => fakeModel,
+          resolveJudgeModel: () => fakeModel,
+          toolVersion: 'test',
+        },
+        dryRun: false,
+        runIdOverride: 'wiki-capability-test',
+      }),
+    ).rejects.toThrow(
+      "wiki service is missing required capability 'dense' for model 'm1-rag-dense'",
+    );
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
   });
 
   test('openai-compatible candidates receive standard max output tokens', async () => {
@@ -574,7 +641,14 @@ describe('runBenchmark regression coverage', () => {
   test('ollama and openrouter candidate provider options stay provider-specific', async () => {
     const outDir = path.join(RUNS_ROOT, 'provider-options');
     const config = makeConfig({ outDir });
-    config.models = [{ id: 'm1', router: 'openrouter', model: 'candidate-model', provider: 'openrouter' }];
+    config.models = [
+      {
+        id: 'm1',
+        router: 'openrouter',
+        model: 'candidate-model',
+        provider: 'openrouter',
+      },
+    ];
     const questions = makeQuestions(1);
 
     generateTextMock.mockResolvedValue({
@@ -606,7 +680,9 @@ describe('runBenchmark regression coverage', () => {
     expect(generateTextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         maxOutputTokens: 50,
-        providerOptions: { openrouter: { provider: { order: ['openrouter'], allow_fallbacks: false } } },
+        providerOptions: {
+          openrouter: { provider: { order: ['openrouter'], allow_fallbacks: false } },
+        },
       }),
     );
 
@@ -656,10 +732,17 @@ describe('runBenchmark regression coverage', () => {
       outDir,
       retry: { maxRetries: 2, baseMs: 1, maxMs: 1 },
     });
-    const events: Array<{ type: string; attempt?: number; stage?: string; statusCode?: number }> = [];
+    const events: Array<{
+      type: string;
+      attempt?: number;
+      stage?: string;
+      statusCode?: number;
+    }> = [];
 
     generateTextMock
-      .mockRejectedValueOnce(Object.assign(new Error('Provider returned error'), { statusCode: 429 }))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Provider returned error'), { statusCode: 429 }),
+      )
       .mockRejectedValueOnce(new Error('temporarily rate-limited upstream'))
       .mockResolvedValueOnce({
         text: 'candidate',
@@ -726,7 +809,8 @@ describe('runBenchmark regression coverage', () => {
     expect(generateTextMock).toHaveBeenCalledTimes(3);
     const { results } = await getStore();
     const row = Array.from(results.values()).find(
-      (entry) => entry.runId === 'candidate-retry-exhausted-test' && entry.questionId === 'Q1',
+      (entry) =>
+        entry.runId === 'candidate-retry-exhausted-test' && entry.questionId === 'Q1',
     );
     expect(row?.status).toBe('candidate_failed');
   });

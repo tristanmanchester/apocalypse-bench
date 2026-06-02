@@ -1,33 +1,28 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PQueue from 'p-queue';
-import { generateText, stepCountIs } from 'ai';
 import type { LanguageModel } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
-import type { ApocbenchConfig } from '../config/schema';
-import { isAgentCandidateMode, isWikiCandidateMode } from '../config/schema';
+import type { ApocbenchConfig, CandidateMode } from '../config/schema';
+import { isWikiCandidateMode } from '../config/schema';
 import type { DatasetLine } from '../dataset/schema';
 import { buildCandidatePrompt } from '../prompts/candidatePrompt';
 import { buildJudgePrompt } from '../prompts/judgePrompt';
-import { CANDIDATE_SYSTEM_PROMPT, JUDGE_SYSTEM_PROMPT } from '../prompts/systemPrompts';
-import {
-  buildWikiGroundedCandidatePrompt,
-  type RetrievalTrace,
-} from '../wiki/rag';
-import { createWikiAgentContext } from '../wiki/agent';
+import { JUDGE_SYSTEM_PROMPT } from '../prompts/systemPrompts';
 import {
   checkWikiReadiness,
   createWikiClientFromConfig,
   type WikiClient,
 } from '../wiki/client';
+import type { WikiReadiness, WikiSearchMode } from '../wiki/types';
+import { executeCandidate, type CandidateMetrics } from '../candidate';
 import { aggregateModel } from '../scoring/aggregate';
 import { computeOverallScore, judgeWithRubricCompletenessRetry } from './judge';
 import { makeRunId, promptTemplateHash } from './runId';
-import type { CandidateMetrics, JudgeOutput } from './types';
+import type { JudgeOutput } from './types';
 import { sha256FileHex } from '../../utils/hash';
 import { redactSecrets } from '../../utils/redaction';
-import { sleep } from '../../utils/backoff';
 import { writeJson } from '../../reports/json/exports';
 import { renderHtmlReport } from '../../reports/html/renderHtml';
 import {
@@ -40,11 +35,6 @@ import {
   updateRunStatusForRun,
   upsertRunResult,
 } from './persistence';
-import {
-  normalizeOpenRouterUsageFromProviderMetadata,
-  normalizeUsage,
-  type NormalizedUsage,
-} from './openrouterUsage';
 import { toOpenRouterProviderParam } from '../config/schema';
 import {
   extractOpenRouterCost,
@@ -54,13 +44,7 @@ import {
   type BudgetState,
 } from './budget';
 import { maybeEmitOpenRouterGenerationMetrics } from './generationMetrics';
-import {
-  classifyRetryError,
-  computeRetryDelayMs,
-  DEFAULT_RETRY_POLICY,
-  shouldRetryWithinBudget,
-  type RetryPolicy,
-} from './retryPolicy';
+import { DEFAULT_RETRY_POLICY, type RetryPolicy } from './retryPolicy';
 
 export type RunnerEvent =
   | { type: 'run_started'; runId: string; startedAtMs: number }
@@ -109,7 +93,12 @@ export type RunnerEvent =
       statusCode?: number;
     }
   | { type: 'budget_exceeded'; runId: string; maxBudgetUsd: number }
-  | { type: 'budget_spent'; runId: string; spentUsd: number; source: 'candidate' | 'judge' }
+  | {
+      type: 'budget_spent';
+      runId: string;
+      spentUsd: number;
+      source: 'candidate' | 'judge';
+    }
   | { type: 'run_completed'; runId: string };
 
 export type RunnerDeps = {
@@ -121,21 +110,6 @@ export type RunnerDeps = {
   toolVersion: string;
 };
 
-type AbortableCall<T> = {
-  call: () => Promise<T>;
-  signal: AbortSignal;
-  abort: () => void;
-};
-
-function createAbortableCall<T>(call: (signal: AbortSignal) => Promise<T>): AbortableCall<T> {
-  const controller = new AbortController();
-  return {
-    call: () => call(controller.signal),
-    signal: controller.signal,
-    abort: () => controller.abort(new Error('aborted')),
-  };
-}
-
 export type RunResult = {
   runId: string;
   outDir: string;
@@ -144,8 +118,7 @@ export type RunResult = {
 };
 
 type TextMessages = Array<
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  { role: 'system'; content: string } | { role: 'user'; content: string }
 >;
 
 type RunContext = {
@@ -162,14 +135,6 @@ type RunContext = {
 };
 
 type ModelEntry = ApocbenchConfig['models'][number];
-type CandidateRouterDefaults = {
-  temperature?: number | null;
-  maxTokens?: number;
-  timeoutMs?: number;
-};
-
-type GenerateTextArgs = Parameters<typeof generateText>[0];
-
 function selectQuestions(params: {
   allQuestions: DatasetLine[];
   config: ApocbenchConfig;
@@ -197,7 +162,9 @@ function resolveModels(params: {
 }): ModelEntry[] {
   const { config, selectedModelIds } = params;
   return config.models.filter((m) =>
-    selectedModelIds && selectedModelIds.length > 0 ? selectedModelIds.includes(m.id) : true,
+    selectedModelIds && selectedModelIds.length > 0
+      ? selectedModelIds.includes(m.id)
+      : true,
   );
 }
 
@@ -228,10 +195,7 @@ function extractOpenRouterGenerationId(result: unknown): string | null {
   if (typeof topLevelId === 'string' && topLevelId.length > 0) return topLevelId;
 
   const providerMetadataId = (
-    result as
-      | { providerMetadata?: { openrouter?: { id?: unknown } } }
-      | null
-      | undefined
+    result as { providerMetadata?: { openrouter?: { id?: unknown } } } | null | undefined
   )?.providerMetadata?.openrouter?.id;
   if (typeof providerMetadataId === 'string' && providerMetadataId.length > 0)
     return providerMetadataId;
@@ -239,137 +203,9 @@ function extractOpenRouterGenerationId(result: unknown): string | null {
   return null;
 }
 
-async function generateTextWithRetry(params: {
-  call: Omit<GenerateTextArgs, 'abortSignal'>;
-  timeoutMs?: number | null;
-  retryPolicy: RetryPolicy;
-  onRetry?: (event: {
-    attempt: number;
-    maxRetries: number;
-    delayMs: number;
-    reason: string;
-    statusCode?: number;
-  }) => void;
-}): Promise<Awaited<ReturnType<typeof generateText>>> {
-  const { call, timeoutMs, retryPolicy, onRetry } = params;
-  const startedAtMs = Date.now();
-  for (let attempt = 0; attempt <= retryPolicy.maxRetries; attempt++) {
-    try {
-      if (timeoutMs != null && Number.isFinite(timeoutMs) && timeoutMs > 0) {
-        const abortable = createAbortableCall((abortSignal) => {
-          return generateText({
-            ...(call as GenerateTextArgs),
-            abortSignal,
-          });
-        });
-        const timeoutId = setTimeout(() => abortable.abort(), timeoutMs);
-        try {
-          return await abortable.call();
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      }
-
-      return await generateText(call as GenerateTextArgs);
-    } catch (err) {
-      const retryDecision = classifyRetryError(err);
-      if (!retryDecision.retryable || attempt === retryPolicy.maxRetries) throw err;
-      const delayMs = computeRetryDelayMs({
-        attempt,
-        policy: retryPolicy,
-        retryAfterMs: retryDecision.retryAfterMs,
-      });
-      if (
-        !shouldRetryWithinBudget({
-          startedAtMs,
-          nowMs: Date.now(),
-          delayMs,
-          policy: retryPolicy,
-        })
-      ) {
-        throw err;
-      }
-      onRetry?.({
-        attempt: attempt + 1,
-        maxRetries: retryPolicy.maxRetries,
-        delayMs,
-        reason: retryDecision.reason,
-        statusCode: retryDecision.statusCode,
-      });
-      await sleep(
-        delayMs,
-      );
-    }
-  }
-  throw new Error('unreachable');
-}
-
 function redactReason(reason: string): string {
   const redacted = redactSecrets(reason);
   return typeof redacted === 'string' ? redacted : String(redacted);
-}
-
-function buildCandidateProviderOptions(
-  config: ApocbenchConfig,
-  modelEntry: ModelEntry,
-): ProviderOptions | undefined {
-  return (modelEntry.router === 'openrouter'
-    ? {
-        openrouter: {
-          ...(modelEntry.routing
-            ? { provider: toOpenRouterProviderParam(modelEntry.routing) }
-            : modelEntry.provider
-              ? {
-                  provider: {
-                    order: [modelEntry.provider],
-                    allow_fallbacks: false,
-                  },
-                }
-              : {}),
-        },
-      }
-    : modelEntry.router === 'ollama'
-      ? {
-          ollama: {
-            options: {
-              num_predict:
-                config.candidate?.maxTokens ??
-                modelEntry.params?.maxTokens ??
-                config.routers[modelEntry.router].default.maxTokens ??
-                undefined,
-            },
-          },
-        }
-    : undefined) as ProviderOptions | undefined;
-}
-
-function getCandidateRouterDefaults(
-  config: ApocbenchConfig,
-  modelEntry: ModelEntry,
-): CandidateRouterDefaults {
-  if (modelEntry.router === 'openai-compatible') {
-    const routerConfig = config.routers.openaiCompatible;
-    if (!routerConfig) {
-      throw new Error('missing router config: routers.openaiCompatible');
-    }
-    return routerConfig.default;
-  }
-
-  return config.routers[modelEntry.router].default;
-}
-
-function getCandidateMaxOutputTokens(
-  config: ApocbenchConfig,
-  modelEntry: ModelEntry,
-): number | undefined {
-  if (modelEntry.router === 'ollama') return undefined;
-  const defaults = getCandidateRouterDefaults(config, modelEntry);
-  return (
-    config.candidate?.maxTokens ??
-    modelEntry.params?.maxTokens ??
-    defaults.maxTokens ??
-    undefined
-  );
 }
 
 function buildJudgeProviderOptions(config: ApocbenchConfig): ProviderOptions {
@@ -396,7 +232,7 @@ async function handleJudgeQuestion(params: {
   question: DatasetLine;
   candidateText: string;
   lastCandidateLatencyMs: number | undefined;
-  lastCandidateUsage: NormalizedUsage | null | undefined;
+  lastCandidateUsage: CandidateMetrics['usage'] | undefined;
   lastCandidateCostUsd: number | undefined;
 }): Promise<void> {
   const {
@@ -589,71 +425,18 @@ async function handleCandidateQuestion(params: {
     questionId: question.id,
   });
 
-  const candidatePrompt = buildCandidatePrompt(question);
-  let effectiveCandidatePrompt = candidatePrompt;
-  let retrievalTrace: RetrievalTrace | undefined;
   const candidateStart = Date.now();
-
-  // These variables capture only primitive/normalized data to avoid retaining
-  // references to the large AI SDK response objects in closures.
-  let lastCandidateLatencyMs: number | undefined;
-  let lastCandidateUsage: NormalizedUsage | null | undefined;
-  let lastCandidateCostUsd: number | undefined;
+  let candidatePrompt: string | undefined;
+  let retrievalTraceJson: string | undefined;
 
   try {
-    const candidateMode = modelEntry.candidateMode ?? 'direct';
-    let agentTools: GenerateTextArgs['tools'] | undefined;
-    let agentStopWhen: GenerateTextArgs['stopWhen'] | undefined;
-    if (isWikiCandidateMode(candidateMode)) {
-      if (!config.wiki || !ctx.wikiClient) {
-        throw new Error(`missing wiki config/client for candidateMode: ${candidateMode}`);
-      }
-      if (isAgentCandidateMode(candidateMode)) {
-        const wikiAgent = createWikiAgentContext({
-          basePrompt: candidatePrompt,
-          mode: candidateMode,
-          wiki: config.wiki,
-          client: ctx.wikiClient,
-        });
-        effectiveCandidatePrompt = wikiAgent.prompt;
-        retrievalTrace = wikiAgent.trace;
-        agentTools = wikiAgent.tools;
-        agentStopWhen = stepCountIs(config.wiki.limits.maxTurns ?? 6);
-      } else {
-        const wikiContext = await buildWikiGroundedCandidatePrompt({
-          question,
-          basePrompt: candidatePrompt,
-          mode: candidateMode,
-          wiki: config.wiki,
-          client: ctx.wikiClient,
-        });
-        effectiveCandidatePrompt = wikiContext.prompt;
-        retrievalTrace = wikiContext.trace;
-      }
-    }
-
-    const routerDefaults = getCandidateRouterDefaults(config, modelEntry);
-    const candidateResult = await generateTextWithRetry({
-      timeoutMs:
-        modelEntry.params?.timeoutMs ??
-        routerDefaults.timeoutMs ??
-        null,
+    const candidateResult = await executeCandidate({
+      config,
+      modelEntry,
+      model: candidateModel,
+      question,
+      wikiClient: ctx.wikiClient,
       retryPolicy,
-      call: {
-        model: candidateModel,
-        messages: [
-          { role: 'system', content: CANDIDATE_SYSTEM_PROMPT },
-          { role: 'user', content: effectiveCandidatePrompt },
-        ] as TextMessages,
-        tools: agentTools,
-        stopWhen: agentStopWhen,
-        temperature:
-          modelEntry.params?.temperature ??
-          routerDefaults.temperature ??
-          undefined,
-        maxOutputTokens: getCandidateMaxOutputTokens(config, modelEntry),
-        providerOptions: buildCandidateProviderOptions(config, modelEntry),
-      },
       onRetry: (retry) =>
         onEvent?.({
           type: 'request_retry',
@@ -669,31 +452,23 @@ async function handleCandidateQuestion(params: {
         }),
     });
 
-    const candidateText = candidateResult.text;
-    const candidateCostUsd = extractOpenRouterCost(candidateResult);
-    if (candidateCostUsd != null) {
+    candidatePrompt = candidateResult.prompt;
+    retrievalTraceJson = candidateResult.retrievalTrace
+      ? JSON.stringify(candidateResult.retrievalTrace)
+      : undefined;
+    const candidateText = candidateResult.completion;
+    const candidateMetrics = candidateResult.metrics;
+    if (candidateMetrics.costUsd != null) {
       recordSpend({
         state: budgetState,
         runId,
-        costUsd: candidateCostUsd,
+        costUsd: candidateMetrics.costUsd,
         source: 'candidate',
         onEvent,
       });
     }
 
-    lastCandidateLatencyMs = Date.now() - candidateStart;
-    // Extract and normalize usage immediately to break reference to candidateResult.
-    // This is critical: the AI SDK response object can be large and retaining it
-    // in closures (like the judge queue task) causes memory accumulation.
-    const candidateOr = normalizeOpenRouterUsageFromProviderMetadata(
-      (candidateResult as { providerMetadata?: unknown } | null | undefined)
-        ?.providerMetadata,
-    );
-    // Prefer OpenRouter normalized usage, fall back to normalizing standard usage
-    lastCandidateUsage = candidateOr.usage ?? normalizeUsage(candidateResult.usage);
-    lastCandidateCostUsd = candidateOr.costUsd ?? candidateCostUsd ?? undefined;
-
-    const candidateGenerationId = extractOpenRouterGenerationId(candidateResult);
+    const candidateGenerationId = candidateResult.generationId;
     if (candidateGenerationId) {
       onEvent?.({
         type: 'generation_metrics',
@@ -704,9 +479,6 @@ async function handleCandidateQuestion(params: {
       });
     }
 
-    // Fire-and-forget: don't block candidate slot for metrics fetch
-    // Note: Only pass the generationId, not the full result, to avoid retaining
-    // the large AI SDK response object in the closure until the async completes.
     if (candidateGenerationId) {
       void maybeEmitOpenRouterGenerationMetrics({
         config,
@@ -718,20 +490,14 @@ async function handleCandidateQuestion(params: {
       });
     }
 
-    const metrics: CandidateMetrics = {
-      latencyMs: lastCandidateLatencyMs,
-      usage: lastCandidateUsage,
-      costUsd: lastCandidateCostUsd,
-    };
-
     upsertRunResult(db, {
       runId,
       modelId: modelEntry.id,
       questionId: question.id,
-      candidatePrompt: effectiveCandidatePrompt,
-      retrievalTraceJson: retrievalTrace ? JSON.stringify(retrievalTrace) : undefined,
+      candidatePrompt,
+      retrievalTraceJson,
       candidateCompletion: candidateText,
-      candidateMetricsJson: JSON.stringify(metrics),
+      candidateMetricsJson: JSON.stringify(candidateMetrics),
       status: 'candidate_done',
     });
 
@@ -754,9 +520,9 @@ async function handleCandidateQuestion(params: {
         modelEntry,
         question,
         candidateText,
-        lastCandidateLatencyMs,
-        lastCandidateUsage,
-        lastCandidateCostUsd,
+        lastCandidateLatencyMs: candidateMetrics.latencyMs,
+        lastCandidateUsage: candidateMetrics.usage,
+        lastCandidateCostUsd: candidateMetrics.costUsd,
       });
     });
   } catch (err) {
@@ -766,8 +532,8 @@ async function handleCandidateQuestion(params: {
       runId,
       modelId: modelEntry.id,
       questionId: question.id,
-      candidatePrompt: effectiveCandidatePrompt,
-      retrievalTraceJson: retrievalTrace ? JSON.stringify(retrievalTrace) : undefined,
+      candidatePrompt,
+      retrievalTraceJson,
       status: 'candidate_failed',
       errorJson: JSON.stringify({ message }),
     });
@@ -833,6 +599,7 @@ function computeModelSummaries(params: {
                 mr.score_overall,
                 mr.auto_fail,
                 mr.candidate_metrics_json,
+                mr.retrieval_trace_json,
                 q.category,
                 q.difficulty
               FROM model_results mr
@@ -848,6 +615,7 @@ function computeModelSummaries(params: {
     score_overall: number | null;
     auto_fail: number | null;
     candidate_metrics_json: string | null;
+    retrieval_trace_json: string | null;
     category: string | null;
     difficulty: string | null;
   }>;
@@ -882,7 +650,11 @@ function computeModelSummaries(params: {
     }
   };
 
-  const perModel = new Map<string, Parameters<typeof aggregateModel>[0]['questionScores']>();
+  const perModel = new Map<
+    string,
+    Parameters<typeof aggregateModel>[0]['questionScores']
+  >();
+  const retrievalByModel = new Map<string, string[]>();
   for (const row of rows) {
     const list = perModel.get(row.model_id) ?? [];
     list.push({
@@ -895,11 +667,159 @@ function computeModelSummaries(params: {
       latencyMs: parseLatencyMs(row.candidate_metrics_json),
     });
     perModel.set(row.model_id, list);
+    if (row.retrieval_trace_json) {
+      const traces = retrievalByModel.get(row.model_id) ?? [];
+      traces.push(row.retrieval_trace_json);
+      retrievalByModel.set(row.model_id, traces);
+    }
   }
 
-  return modelIds.map((modelId) =>
-    aggregateModel({ modelId, questionScores: perModel.get(modelId) ?? [] }),
-  );
+  return modelIds.map((modelId) => {
+    const summary = aggregateModel({
+      modelId,
+      questionScores: perModel.get(modelId) ?? [],
+    });
+    const retrieval = summarizeRetrievalTraces(retrievalByModel.get(modelId) ?? []);
+    return retrieval.traceCount > 0 ? { ...summary, retrieval } : summary;
+  });
+}
+
+function requiredWikiCapabilitiesForMode(mode: CandidateMode): WikiSearchMode[] {
+  switch (mode) {
+    case 'rag-bm25':
+    case 'agent-bm25':
+      return ['bm25'];
+    case 'rag-dense':
+    case 'agent-dense':
+      return ['dense'];
+    case 'rag-hybrid':
+    case 'agent-hybrid':
+      return ['hybrid'];
+    case 'agent-wiki':
+      return ['bm25', 'dense', 'hybrid', 'literal'];
+    case 'agent-rg':
+    case 'agent-literal':
+      return ['literal'];
+    case 'direct':
+      return [];
+  }
+}
+
+function assertWikiCapabilities(params: {
+  readiness: WikiReadiness;
+  models: ModelEntry[];
+}): void {
+  const { readiness, models } = params;
+  for (const model of models) {
+    const mode = model.candidateMode ?? 'direct';
+    const capabilities = requiredWikiCapabilitiesForMode(mode);
+    const missing = capabilities.filter((capability) => !readiness.capabilities.has(capability));
+    if (missing.length === 0) continue;
+    if (missing.length === 1) {
+      throw new Error(
+        `wiki service is missing required capability '${missing[0]}' for model '${model.id}' candidateMode '${mode}'`,
+      );
+    }
+    throw new Error(
+      `wiki service is missing required capabilities '${missing.join(', ')}' for model '${model.id}' candidateMode '${mode}'`,
+    );
+  }
+}
+
+function summarizeRetrievalTraces(rawTraces: string[]): {
+  traceCount: number;
+  modes: Record<string, number>;
+  searchCount: number;
+  readCount: number;
+  uniqueSourceTitles: string[];
+  latencyMs: {
+    medianMs: number | null;
+    meanMs: number | null;
+    p90Ms: number | null;
+    minMs: number | null;
+    maxMs: number | null;
+  };
+} {
+  const modes: Record<string, number> = {};
+  const titles = new Set<string>();
+  const latencies: number[] = [];
+  let traceCount = 0;
+  let searchCount = 0;
+  let readCount = 0;
+
+  for (const raw of rawTraces) {
+    const trace = safeParseObject(raw);
+    if (!trace) continue;
+    traceCount += 1;
+    if (typeof trace.mode === 'string') {
+      modes[trace.mode] = (modes[trace.mode] ?? 0) + 1;
+    }
+    const searches = Array.isArray(trace.searches) ? trace.searches : [];
+    const reads = Array.isArray(trace.reads) ? trace.reads : [];
+    searchCount += searches.length;
+    readCount += reads.length;
+    for (const search of searches) {
+      if (!isRecord(search)) continue;
+      pushLatency(latencies, search.latencyMs);
+    }
+    for (const read of reads) {
+      if (!isRecord(read)) continue;
+      pushLatency(latencies, read.latencyMs);
+      if (typeof read.title === 'string' && read.title.length > 0) {
+        titles.add(read.title);
+      }
+    }
+  }
+
+  return {
+    traceCount,
+    modes,
+    searchCount,
+    readCount,
+    uniqueSourceTitles: Array.from(titles).sort(),
+    latencyMs: latencyStats(latencies),
+  };
+}
+
+function safeParseObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function pushLatency(values: number[], value: unknown): void {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    values.push(value);
+  }
+}
+
+function latencyStats(values: number[]): {
+  medianMs: number | null;
+  meanMs: number | null;
+  p90Ms: number | null;
+  minMs: number | null;
+  maxMs: number | null;
+} {
+  if (values.length === 0) {
+    return { medianMs: null, meanMs: null, p90Ms: null, minMs: null, maxMs: null };
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const percentile = (p: number) =>
+    sorted[Math.min(sorted.length - 1, Math.floor(p * (sorted.length - 1)))]!;
+  return {
+    medianMs: percentile(0.5),
+    meanMs: values.reduce((sum, value) => sum + value, 0) / values.length,
+    p90Ms: percentile(0.9),
+    minMs: sorted[0]!,
+    maxMs: sorted[sorted.length - 1]!,
+  };
 }
 
 export async function runBenchmark(params: {
@@ -917,14 +837,7 @@ export async function runBenchmark(params: {
   forceResume?: boolean;
   onEvent?: (e: RunnerEvent) => void;
 }): Promise<RunResult | null> {
-  const {
-    config,
-    datasetAbsolutePath,
-    deps,
-    dryRun,
-    selectedModelIds,
-    onEvent,
-  } = params;
+  const { config, datasetAbsolutePath, deps, dryRun, selectedModelIds, onEvent } = params;
 
   const resumeMode = config.run.resume || params.forceResume === true;
   const questions = selectQuestions({
@@ -958,13 +871,17 @@ export async function runBenchmark(params: {
 
   const judgeModel = deps.resolveJudgeModel(config);
   const models = resolveModels({ config, selectedModelIds });
-  const needsWiki = models.some((model) => isWikiCandidateMode(model.candidateMode ?? 'direct'));
-  const wikiClient = needsWiki && config.wiki ? createWikiClientFromConfig(config.wiki) : undefined;
+  const needsWiki = models.some((model) =>
+    isWikiCandidateMode(model.candidateMode ?? 'direct'),
+  );
+  const wikiClient =
+    needsWiki && config.wiki ? createWikiClientFromConfig(config.wiki) : undefined;
   if (needsWiki) {
     if (!config.wiki || !wikiClient) {
       throw new Error('missing wiki config for wiki-enabled candidate modes');
     }
-    await checkWikiReadiness(wikiClient, config.wiki);
+    const readiness = await checkWikiReadiness(wikiClient, config.wiki);
+    assertWikiCapabilities({ readiness, models });
   }
   const { judgeQueue, perModelQueue } = createQueues({ config, models });
 

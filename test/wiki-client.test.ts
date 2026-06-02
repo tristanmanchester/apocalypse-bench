@@ -100,6 +100,94 @@ describe('WikiClient', () => {
     );
   });
 
+  test('forwards scoped literal search pointers', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        mode: 'literal',
+        query: 'warm gradually',
+        hits: [],
+        latencyMs: 1,
+      }),
+    );
+    const client = new WikiClient({
+      baseUrl: 'http://127.0.0.1:8765',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await client.literalSearch({
+      query: 'warm gradually',
+      topK: 2,
+      articleId: 'hypothermia',
+      chunkId: 'hypothermia:treatment',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:8765/literal_search',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          query: 'warm gradually',
+          limit: 2,
+          articleId: 'hypothermia',
+          chunkId: 'hypothermia:treatment',
+        }),
+      }),
+    );
+  });
+
+  test('preserves fused hit source metadata from the Rust service shape', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        mode: 'hybrid',
+        query: 'water purification',
+        hits: [
+          {
+            mode: 'hybrid',
+            score: 0.032,
+            bm25_score: 12.5,
+            dense_score: 0.88,
+            article_id: 'a1',
+            chunk_id: 'c1',
+            title: 'Water purification',
+            heading_path: ['Boiling'],
+            url: 'https://en.wikipedia.org/wiki/Water_purification',
+            snippet: 'Boiling can disinfect water.',
+            sources: ['bm25', 'dense'],
+          },
+        ],
+        latencyMs: 8,
+      }),
+    );
+    const client = new WikiClient({
+      baseUrl: 'http://127.0.0.1:8765',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.hybridSearch({ query: 'water purification', topK: 2 })).resolves.toEqual({
+      mode: 'hybrid',
+      query: 'water purification',
+      hits: [
+        {
+          pointer: {
+            articleId: 'a1',
+            chunkId: 'c1',
+            title: 'Water purification',
+            headingPath: ['Boiling'],
+            url: 'https://en.wikipedia.org/wiki/Water_purification',
+          },
+          mode: 'hybrid',
+          score: 0.032,
+          bm25Score: 12.5,
+          denseScore: 0.88,
+          sources: ['bm25', 'dense'],
+          snippet: 'Boiling can disinfect water.',
+        },
+      ],
+      latencyMs: 8,
+    });
+  });
+
   test('turns non-2xx service responses into WikiClientError', async () => {
     const client = new WikiClient({
       baseUrl: 'http://127.0.0.1:8765',

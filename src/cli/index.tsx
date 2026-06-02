@@ -139,7 +139,9 @@ async function runCommand(
   const runPromise = runBenchmark({
     config,
     configPath: flags.config,
-    datasetPath: config.run.datasetPaths ? config.run.datasetPaths.join(',') : config.run.datasetPath!,
+    datasetPath: config.run.datasetPaths
+      ? config.run.datasetPaths.join(',')
+      : config.run.datasetPath!,
     datasetAbsolutePath:
       'absolutePath' in dataset
         ? dataset.absolutePath
@@ -261,9 +263,7 @@ async function exportMdCommand(
     die(`unsupported redact mode (MVP supports only "none"): ${redact}`);
   }
 
-  const db = openAndMigrate(
-    path.resolve(process.cwd(), 'runs', 'apocbench.sqlite'),
-  );
+  const db = openAndMigrate(path.resolve(process.cwd(), 'runs', 'apocbench.sqlite'));
   const run = getRun(db, runId);
   if (!run) die(`run not found: ${runId}`);
   const results = listRunModelResults(db, runId);
@@ -314,14 +314,18 @@ async function exportMdCommand(
     new Set(
       results
         .map((row) => row.category)
-        .filter((value): value is string => typeof value === 'string' && value.length > 0),
+        .filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        ),
     ),
   );
   const byModel = Array.from(
     new Set(
       results
         .map((row) => row.model_id)
-        .filter((value): value is string => typeof value === 'string' && value.length > 0),
+        .filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        ),
     ),
   );
   const cases = includeCases
@@ -329,7 +333,9 @@ async function exportMdCommand(
         new Set(
           results
             .map((row) => row.question_id)
-            .filter((value): value is string => typeof value === 'string' && value.length > 0),
+            .filter(
+              (value): value is string => typeof value === 'string' && value.length > 0,
+            ),
         ),
       )
     : [];
@@ -337,7 +343,9 @@ async function exportMdCommand(
     new Set(
       results
         .map((row) => row.model_id)
-        .filter((value): value is string => typeof value === 'string' && value.length > 0),
+        .filter(
+          (value): value is string => typeof value === 'string' && value.length > 0,
+        ),
     ),
   );
 
@@ -372,9 +380,7 @@ async function exportMdCommand(
     error: normalizeJson(row.error_json),
   }));
 
-  const resultsJsonl = resultsRecords
-    .map((record) => JSON.stringify(record))
-    .join('\n');
+  const resultsJsonl = resultsRecords.map((record) => JSON.stringify(record)).join('\n');
 
   fs.writeFileSync(
     path.join(resolvedOutDir, 'RUN.md'),
@@ -417,7 +423,8 @@ async function exportMdCommand(
         .map((item) => {
           if (!item || typeof item !== 'object') return null;
           const record = item as Record<string, unknown>;
-          if (typeof record.id !== 'string' || typeof record.text !== 'string') return null;
+          if (typeof record.id !== 'string' || typeof record.text !== 'string')
+            return null;
           const rubricItem = {
             id: record.id,
             text: record.text,
@@ -426,9 +433,7 @@ async function exportMdCommand(
           if (typeof record.maxScore === 'number') rubricItem.maxScore = record.maxScore;
           return rubricItem;
         })
-        .filter(
-          (item): item is DomainRenderCase['rubric'][number] => item !== null,
-        );
+        .filter((item): item is DomainRenderCase['rubric'][number] => item !== null);
     } catch {
       return [];
     }
@@ -464,6 +469,7 @@ async function exportMdCommand(
         modelId: row.model_id,
         status: row.status,
         answer: normalizeText(row.candidate_completion),
+        retrievalTrace: normalizeJson(row.retrieval_trace_json),
         scoreOverall: row.score_overall,
         autoFail: typeof row.auto_fail === 'number' ? row.auto_fail === 1 : null,
         autoFailReason: row.auto_fail_reason,
@@ -483,6 +489,7 @@ async function exportMdCommand(
             modelId,
             status: 'MISSING',
             answer: null,
+            retrievalTrace: null,
             scoreOverall: null,
             autoFail: null,
             autoFailReason: null,
@@ -497,9 +504,7 @@ async function exportMdCommand(
     for (const [domain, caseMap] of domainMap.entries()) {
       const caseList = Array.from(caseMap.values());
       const modelCount = new Set(
-        caseList.flatMap((caseItem) =>
-          caseItem.results.map((result) => result.modelId),
-        ),
+        caseList.flatMap((caseItem) => caseItem.results.map((result) => result.modelId)),
       ).size;
 
       const content = renderByDomainMd({
@@ -563,6 +568,7 @@ async function exportMdCommand(
         autoFail: base.autoFail,
         status: row.status ?? 'unknown',
         answer: normalizeText(row.candidate_completion),
+        retrievalTrace: normalizeJson(row.retrieval_trace_json),
         scoreOverall: row.score_overall,
         autoFailFlag: typeof row.auto_fail === 'number' ? row.auto_fail === 1 : null,
         autoFailReason: row.auto_fail_reason,
@@ -592,6 +598,7 @@ async function exportMdCommand(
           autoFail: base.autoFail,
           status: 'MISSING',
           answer: null,
+          retrievalTrace: null,
           scoreOverall: null,
           autoFailFlag: null,
           autoFailReason: null,
@@ -667,6 +674,7 @@ async function exportMdCommand(
         modelId: row.model_id ?? 'unknown',
         status: row.status ?? 'unknown',
         answer: normalizeText(row.candidate_completion),
+        retrievalTrace: normalizeJson(row.retrieval_trace_json),
         scoreOverall: row.score_overall,
         autoFail: typeof row.auto_fail === 'number' ? row.auto_fail === 1 : null,
         autoFailReason: row.auto_fail_reason,
@@ -688,6 +696,7 @@ async function exportMdCommand(
           modelId,
           status: 'MISSING',
           answer: null,
+          retrievalTrace: null,
           scoreOverall: null,
           autoFail: null,
           autoFailReason: null,
@@ -890,7 +899,11 @@ const root = buildRouteMap({
             brief: 'Include per-case Markdown files',
             optional: true,
           },
-          overwrite: { kind: 'boolean', brief: 'Overwrite existing output', optional: true },
+          overwrite: {
+            kind: 'boolean',
+            brief: 'Overwrite existing output',
+            optional: true,
+          },
           redact: {
             kind: 'parsed',
             brief: 'Redaction mode (none or basic)',

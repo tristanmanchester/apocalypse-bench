@@ -59,6 +59,7 @@ const candidateModeSchema = z
     'agent-bm25',
     'agent-dense',
     'agent-hybrid',
+    'agent-wiki',
     'agent-rg',
     'agent-literal',
   ])
@@ -245,6 +246,13 @@ export const configSchema = z
         code: z.ZodIssueCode.custom,
         message: 'Missing wiki config for models using wiki candidateMode.',
         path: ['models', wikiModelIndex, 'candidateMode'],
+      });
+    }
+    if (wikiModelIndex !== -1 && config.wiki?.enabled === false) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'wiki.enabled must be true for models using wiki candidateMode.',
+        path: ['wiki', 'enabled'],
       });
     }
   })
