@@ -1,6 +1,11 @@
 import type { DbHandle } from './db';
 
-export type ResultStatus = 'done' | 'candidate_done' | 'candidate_failed' | 'judge_failed' | 'skipped';
+export type ResultStatus =
+  | 'done'
+  | 'candidate_done'
+  | 'candidate_failed'
+  | 'judge_failed'
+  | 'skipped';
 
 export type UpsertResultParams = {
   runId: string;
@@ -35,9 +40,36 @@ export function isResultDone(
       WHERE run_id = ? AND model_id = ? AND question_id = ?
     `,
     )
-    .get(runId, modelId, questionId) as { status?: string; judge_parsed_json?: string } | undefined;
+    .get(runId, modelId, questionId) as
+    | { status?: string; judge_parsed_json?: string }
+    | undefined;
 
   return row?.status === 'done' && Boolean(row.judge_parsed_json);
+}
+
+export function isCandidateDone(
+  db: DbHandle,
+  runId: string,
+  modelId: string,
+  questionId: string,
+): boolean {
+  const row = db
+    .prepare(
+      `
+      SELECT status, candidate_completion
+      FROM model_results
+      WHERE run_id = ? AND model_id = ? AND question_id = ?
+    `,
+    )
+    .get(runId, modelId, questionId) as
+    | { status?: string; candidate_completion?: string }
+    | undefined;
+
+  return (
+    (row?.status === 'candidate_done' || row?.status === 'done') &&
+    typeof row.candidate_completion === 'string' &&
+    row.candidate_completion.trim().length > 0
+  );
 }
 
 export function upsertResult(db: DbHandle, p: UpsertResultParams): void {

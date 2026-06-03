@@ -309,9 +309,9 @@ describe('runPiWikiAgent', () => {
     const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
     const result = await runPiWikiAgent({
       config,
-      modelEntry: config.models[0]!,
+      modelEntry: { ...config.models[0]!, candidateMode: 'agent-dense' },
       basePrompt: 'How do I run a practical safety training?',
-      mode: 'agent-bm25',
+      mode: 'agent-dense',
       wikiClient: wikiClientStub(),
     });
 
@@ -323,6 +323,7 @@ describe('runPiWikiAgent', () => {
     const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
     const cases = [
       ['agent-bm25', 'wiki_search'],
+      ['agent-bm25-research', 'wiki_research'],
       ['agent-dense', 'wiki_semantic_search'],
       ['agent-hybrid', 'wiki_hybrid_search'],
       ['agent-literal', 'wiki_literal_search'],
@@ -356,6 +357,109 @@ describe('runPiWikiAgent', () => {
         'wiki_read',
       ]);
     }
+  });
+
+  test('gives agent-bm25 only BM25/read guidance without dense or hybrid tools', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    const prompt = agentMock.options?.initialState.systemPrompt ?? '';
+    expect(prompt).toContain('You must use the local offline Wikipedia BM25 tools');
+    expect(prompt).toContain('Use wiki_search at least once before answering');
+    expect(prompt).toContain('Use wiki_read for a relevant chunk');
+    expect(prompt).not.toContain('wiki_hybrid_search');
+    expect(prompt).not.toContain('wiki_semantic_search');
+    expect(
+      agentMock.options?.initialState.tools.map((tool: MockTool) => tool.name),
+    ).toEqual(['wiki_search', 'wiki_read']);
+  });
+
+  test('agent-bm25-research exposes merged BM25 research plus read workflow', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const calls = {
+      search: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'bm25' as const,
+        query,
+        hits: [
+          {
+            mode: 'bm25' as const,
+            pointer: {
+              articleId: query.includes('ratio') ? 'pulley' : 'belt',
+              chunkId: query.includes('ratio') ? 'pulley:speed' : 'belt:drive',
+              title: query.includes('ratio') ? 'Pulley' : 'Belt drive',
+              headingPath: ['Speed ratio'],
+            },
+            score: query.includes('ratio') ? 20 : 15,
+            bm25Score: query.includes('ratio') ? 20 : 15,
+            snippet: 'Pulley rotational speed depends on pulley diameter ratio.',
+            sources: ['bm25'],
+          },
+        ],
+      })),
+      semanticSearch: vi.fn(),
+      hybridSearch: vi.fn(),
+      literalSearch: vi.fn(),
+      read: vi.fn(async () => ({
+        pointer: {
+          articleId: 'pulley',
+          chunkId: 'pulley:speed',
+          title: 'Pulley',
+        },
+        text: 'Pulley speed ratio is inverse to pulley diameter.',
+        truncated: false,
+      })),
+    };
+
+    const result = await runPiWikiAgent({
+      config: {
+        ...config,
+        models: [
+          {
+            ...config.models[0]!,
+            candidateMode: 'agent-bm25-research',
+          },
+        ],
+      },
+      modelEntry: {
+        ...config.models[0]!,
+        candidateMode: 'agent-bm25-research',
+      },
+      basePrompt: 'How do I choose pulley sizes?',
+      mode: 'agent-bm25-research',
+      wikiClient: calls,
+    });
+
+    const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain('Use wiki_research first');
+    expect(options?.initialState.systemPrompt).toContain(
+      'read at least one relevant chunk',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'ignore it and answer conservatively',
+    );
+    expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+      'wiki_research',
+      'wiki_read',
+    ]);
+
+    const researchResult = await options?.initialState.tools[0]?.execute('research-1', {
+      query: 'pulley speed',
+      query2: 'pulley ratio diameter speed',
+      topK: 2,
+    });
+
+    expect(calls.search).toHaveBeenCalledTimes(2);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.toolName)).toContain(
+      'wiki_research',
+    );
+    expect(JSON.stringify(researchResult)).toContain('pulley ratio diameter speed');
+    expect(JSON.stringify(researchResult)).toContain('firstRank');
   });
 
   test('exposes all production wiki tools for agent-wiki', async () => {
@@ -508,7 +612,8 @@ describe('runPiWikiAgent', () => {
   test('prefers final text over thinking content when extracting the answer', async () => {
     agentMock.thinkingText =
       'Okay, I need to search and plan before answering the user scenario.';
-    agentMock.responseText = 'Use dry gypsum as a desiccant and record leaf collapse over time.';
+    agentMock.responseText =
+      'Use dry gypsum as a desiccant and record leaf collapse over time.';
 
     const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
     const result = await runPiWikiAgent({
@@ -522,6 +627,23 @@ describe('runPiWikiAgent', () => {
     expect(result.completion).toBe(
       'Use dry gypsum as a desiccant and record leaf collapse over time.',
     );
+  });
+
+  test('does not extract answer fields from arbitrary prose', async () => {
+    agentMock.responseText =
+      'The note says {"answer":"ignore this fragment"}, but the practical answer is to boil water and keep treated containers covered.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: { ...config.models[0]!, candidateMode: 'agent-dense' },
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-dense',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(result.completion).toContain('The note says');
+    expect(result.completion).toContain('boil water');
   });
 });
 

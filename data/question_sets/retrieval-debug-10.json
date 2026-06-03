@@ -1,0 +1,85 @@
+{
+  "id": "retrieval-debug-10",
+  "description": "Canonical broad-category Wikipedia retrieval development set. This is a dev harness, not a holdout benchmark: it mixes BM25 wins, BM25 regressions, and hard procedural questions to test whether Wikipedia access improves Gemma answers without increasing catastrophic failures.",
+  "selectionDate": "2026-06-03",
+  "questionIds": [
+    "MAT-040",
+    "ENR-005",
+    "SAFE-023",
+    "ENR-014",
+    "SAFE-025",
+    "ENG-016",
+    "AGR-009",
+    "MED-025",
+    "MEAS-013",
+    "PH-014"
+  ],
+  "questions": [
+    {
+      "id": "MAT-040",
+      "category": "Materials",
+      "reason": "BM25 huge rescue over direct; caustic sodium silicate/waterglass procedure with safety-critical dilution."
+    },
+    {
+      "id": "ENR-005",
+      "category": "Energy",
+      "reason": "BM25 huge rescue over direct; charcoal kiln vs biogas vs waterwheel comparison exposes wood-use misconception."
+    },
+    {
+      "id": "SAFE-023",
+      "category": "Safety",
+      "reason": "BM25 huge rescue over direct; unknown-liquid identification tests whether retrieval prevents unsafe flame/sniffing advice."
+    },
+    {
+      "id": "ENR-014",
+      "category": "Energy",
+      "reason": "BM25 catastrophic regression; pulley ratio directionality and belt-drive safety are easy to invert."
+    },
+    {
+      "id": "SAFE-025",
+      "category": "Safety",
+      "reason": "BM25 catastrophic regression; white-phosphorus handling tests whether retrieval prevents dry brushing/oil mistakes."
+    },
+    {
+      "id": "ENG-016",
+      "category": "Engineering",
+      "reason": "BM25 regression; rope splice directionality tests whether the agent verifies against-the-lay vs with-the-lay."
+    },
+    {
+      "id": "AGR-009",
+      "category": "Agriculture",
+      "reason": "Non-fail BM25 lift; ecology and food-security critique tests whether retrieval adds concrete details."
+    },
+    {
+      "id": "MED-025",
+      "category": "Medicine",
+      "reason": "BM25 rescue but still weak; high-stakes breech-birth maneuver tests exact procedural source use."
+    },
+    {
+      "id": "MEAS-013",
+      "category": "Measurement",
+      "reason": "Moderate BM25 loss; pendulum/water-clock constants test whether retrieval preserves numeric accuracy."
+    },
+    {
+      "id": "PH-014",
+      "category": "Public Health",
+      "reason": "Moderate BM25 loss; isolation-zone workflow tests whether retrieval adds details without confusing flow direction."
+    }
+  ],
+  "reporting": {
+    "primaryMetrics": [
+      "median_score",
+      "mean_score",
+      "auto_fail_rate",
+      "zero_rate",
+      "win_rate_vs_direct",
+      "median_delta_vs_direct",
+      "mean_delta_vs_direct",
+      "iqr"
+    ],
+    "target": {
+      "meanLiftVsDirectPercent": 15,
+      "notes": "Lift should be interpreted with auto-fail and zero-rate side by side; do not hide catastrophic failures behind median-only reporting."
+    }
+  }
+}

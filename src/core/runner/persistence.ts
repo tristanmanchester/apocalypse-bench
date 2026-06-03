@@ -5,7 +5,12 @@ import type { DatasetLine } from '../dataset/schema';
 import { openAndMigrate } from '../../storage/sqlite/migrate';
 import { insertRun, updateRunStatus } from '../../storage/sqlite/runs';
 import { insertQuestions } from '../../storage/sqlite/questions';
-import { isResultDone, upsertResult, type UpsertResultParams } from '../../storage/sqlite/results';
+import {
+  isCandidateDone,
+  isResultDone,
+  upsertResult,
+  type UpsertResultParams,
+} from '../../storage/sqlite/results';
 import { listRunModelResults } from '../../storage/sqlite/queries';
 
 export type RunnerDb = DbHandle;
@@ -23,8 +28,15 @@ export function ensureRunStarted(params: {
   datasetSha256: string;
   promptTemplateHash: string;
 }): void {
-  const { db, runId, toolVersion, config, datasetPath, datasetSha256, promptTemplateHash } =
-    params;
+  const {
+    db,
+    runId,
+    toolVersion,
+    config,
+    datasetPath,
+    datasetSha256,
+    promptTemplateHash,
+  } = params;
   const existingRun = db
     .prepare('SELECT run_id FROM runs WHERE run_id = ?')
     .get(runId) as { run_id: string } | undefined;
@@ -61,6 +73,15 @@ export function isRunResultDone(
   return isResultDone(db, runId, modelId, questionId);
 }
 
+export function isRunCandidateDone(
+  db: RunnerDb,
+  runId: string,
+  modelId: string,
+  questionId: string,
+): boolean {
+  return isCandidateDone(db, runId, modelId, questionId);
+}
+
 export function upsertRunResult(db: RunnerDb, params: UpsertResultParams): void {
   upsertResult(db, params);
 }
@@ -69,10 +90,6 @@ export function listRunResults(db: RunnerDb, runId: string) {
   return listRunModelResults(db, runId);
 }
 
-export function updateRunStatusForRun(
-  db: RunnerDb,
-  runId: string,
-  status: string,
-): void {
+export function updateRunStatusForRun(db: RunnerDb, runId: string, status: string): void {
   updateRunStatus(db, runId, status);
 }

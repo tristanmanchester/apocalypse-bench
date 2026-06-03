@@ -4,6 +4,8 @@ import path from 'node:path';
 
 import { migrate, schemaPathForModule } from './migrate';
 import type { DbHandle } from './db';
+import { insertQuestions } from './questions';
+import type { DatasetLine } from '../../core/dataset/schema';
 
 describe('sqlite migration path handling', () => {
   afterEach(() => {
@@ -42,7 +44,9 @@ describe('sqlite migration path handling', () => {
     const exec = vi.fn();
     const prepare = vi.fn(() => ({ all: () => [{ name: 'retrieval_trace_json' }] }));
     const db = { exec, prepare } as unknown as DbHandle;
-    const readFileSync = vi.spyOn(fs, 'readFileSync').mockReturnValue('create table x(id);');
+    const readFileSync = vi
+      .spyOn(fs, 'readFileSync')
+      .mockReturnValue('create table x(id);');
 
     migrate(db);
 
@@ -54,5 +58,35 @@ describe('sqlite migration path handling', () => {
     expect(encoding).toBe('utf8');
     expect(exec).toHaveBeenCalledWith('create table x(id);');
     expect(prepare).toHaveBeenCalledWith('PRAGMA table_info(model_results)');
+  });
+
+  test('question insertion uses true upsert instead of replace', () => {
+    let preparedSql = '';
+    const run = vi.fn();
+    const transaction = vi.fn((fn: (rows: DatasetLine[]) => void) => fn);
+    const db = {
+      prepare: (sql: string) => {
+        preparedSql = sql;
+        return { run };
+      },
+      transaction,
+    } as unknown as DbHandle;
+
+    insertQuestions(db, 'resume-safe', [
+      {
+        id: 'Q1',
+        category: 'Engineering',
+        difficulty: 'Medium',
+        scenario: ['scenario'],
+        prompt: 'prompt',
+        rubric: [{ id: 'r1', text: 'rubric', weight: 1, maxScore: 1 }],
+        auto_fail: ['auto fail'],
+        reference_facts: ['fact'],
+      },
+    ]);
+
+    expect(preparedSql).toContain('ON CONFLICT(run_id, question_id) DO UPDATE SET');
+    expect(preparedSql).not.toMatch(/INSERT OR REPLACE/i);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

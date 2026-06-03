@@ -20,6 +20,7 @@ const question: DatasetLine = {
   difficulty: 'Medium',
   scenario: ['flooded well'],
   prompt: 'How do I make water safer to drink?',
+  reference_facts: ['privileged iodine tablet detail for judge only'],
   rubric: [{ id: 'r1', text: 'safe water advice', weight: 1, maxScore: 1 }],
   auto_fail: ['unsafe water advice'],
 };
@@ -32,9 +33,9 @@ describe('buildWikiGroundedCandidatePrompt', () => {
       mode: 'rag-bm25',
       wiki,
       client: {
-        search: async () => ({
+        search: async ({ query }) => ({
           mode: 'bm25',
-          query: 'water',
+          query,
           hits: [
             {
               mode: 'bm25',
@@ -69,6 +70,8 @@ describe('buildWikiGroundedCandidatePrompt', () => {
     expect(result.prompt).toContain('base prompt');
     expect(result.prompt).toContain('Water purification');
     expect(result.trace.mode).toBe('rag-bm25');
+    expect(result.trace.searches[0]?.query).toContain('How do I make water safer');
+    expect(result.trace.searches[0]?.query).not.toContain('privileged iodine');
     expect(result.trace.reads[0]?.title).toBe('Water purification');
   });
 });

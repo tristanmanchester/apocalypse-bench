@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and serve Snowflake Arctic S embeddings for wiki-search."""
+"""Build and serve wiki-search dense embeddings."""
 
 from __future__ import annotations
 
@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 
-MODEL_ID = "Snowflake/snowflake-arctic-embed-s"
-QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
-VECTOR_SIZE = 384
+DEFAULT_MODEL_ID = "Snowflake/snowflake-arctic-embed-s"
+DEFAULT_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+DEFAULT_DOCUMENT_PREFIX = ""
+DEFAULT_PRECISION = "float32"
 QUANTIZATION = "turbo-bits4"
 SIGNPOST_RULES = ["all_article_leads", "targeted_practical_sections", "benchmark_question_preselection"]
+PRESELECTED_SIGNPOST_RULES = ["preselected_chunks"]
 PRACTICAL_TERMS = {
     "agriculture",
     "antibiotic",
@@ -108,6 +110,15 @@ def main() -> None:
     build.add_argument("--corpus-manifest", required=True)
     build.add_argument("--manifest-out", required=True)
     build.add_argument("--question-bank", action="append", default=[])
+    build.add_argument("--preselected-chunks", action="store_true")
+    build.add_argument("--selection-manifest", default=None)
+    build.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    build.add_argument("--query-prefix", default=DEFAULT_QUERY_PREFIX)
+    build.add_argument("--document-prefix", default=DEFAULT_DOCUMENT_PREFIX)
+    build.add_argument("--query-prompt-name", default=None)
+    build.add_argument("--document-prompt-name", default=None)
+    build.add_argument("--truncate-dim", type=int, default=None)
+    build.add_argument("--precision", choices=["float32", "float16", "bfloat16"], default=DEFAULT_PRECISION)
     build.add_argument("--limit", type=int, default=None)
     build.add_argument("--batch-size", type=int, default=64)
     build.add_argument("--encode-batch-size", type=int, default=128)
@@ -118,23 +129,52 @@ def main() -> None:
     serve = sub.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8766)
+    serve.add_argument("--model-id", default=DEFAULT_MODEL_ID)
+    serve.add_argument("--query-prefix", default=DEFAULT_QUERY_PREFIX)
+    serve.add_argument("--query-prompt-name", default=None)
+    serve.add_argument("--truncate-dim", type=int, default=None)
+    serve.add_argument("--precision", choices=["float32", "float16", "bfloat16"], default=DEFAULT_PRECISION)
     serve.add_argument("--max-seq-length", type=int, default=512)
     serve.add_argument("--fp16", action="store_true")
 
     args = parser.parse_args()
     if args.command == "build":
+        if args.fp16:
+            args.precision = "float16"
         build_vectors(args)
     elif args.command == "serve":
-        serve_embeddings(args.host, args.port, args.fp16, args.max_seq_length)
+        if args.fp16:
+            args.precision = "float16"
+        serve_embeddings(
+            host=args.host,
+            port=args.port,
+            model_id=args.model_id,
+            query_prefix=args.query_prefix,
+            query_prompt_name=args.query_prompt_name,
+            truncate_dim=args.truncate_dim,
+            precision=args.precision,
+            max_seq_length=args.max_seq_length,
+        )
 
 
-def load_model(fp16: bool = False, max_seq_length: int = 512):
+def load_model(
+    model_id: str = DEFAULT_MODEL_ID,
+    *,
+    precision: str = DEFAULT_PRECISION,
+    max_seq_length: int = 512,
+    truncate_dim: int | None = None,
+):
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer(MODEL_ID, trust_remote_code=True)
+    kwargs: dict[str, Any] = {"trust_remote_code": True}
+    if truncate_dim is not None:
+        kwargs["truncate_dim"] = truncate_dim
+    model = SentenceTransformer(model_id, **kwargs)
     model.max_seq_length = max_seq_length
-    if fp16:
+    if precision == "float16":
         model.half()
+    elif precision == "bfloat16":
+        model.bfloat16()
     return model
 
 
@@ -148,35 +188,70 @@ def build_vectors(args: argparse.Namespace) -> None:
         VectorParams,
     )
 
-    model = load_model(args.fp16, args.max_seq_length)
+    model = load_model(
+        args.model_id,
+        precision=args.precision,
+        max_seq_length=args.max_seq_length,
+        truncate_dim=args.truncate_dim,
+    )
+    vector_size = embedding_dimension(model, args.document_prefix, args.document_prompt_name)
     corpus_manifest = json.loads(Path(args.corpus_manifest).read_text(encoding="utf-8"))
     question_terms = load_question_terms([Path(path) for path in args.question_bank])
     client = QdrantClient(url=args.qdrant_url)
     client.recreate_collection(
         collection_name=args.collection,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE, on_disk=True),
+        vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE, on_disk=True),
         quantization_config=TurboQuantization(
             turbo=TurboQuantQuantizationConfig(bits=TurboQuantBitSize.BITS4, always_ram=False)
         ),
     )
 
-    chunks = iter_signposts(Path(args.chunks), args.limit, question_terms)
+    chunks = (
+        iter_preselected_chunks(Path(args.chunks), args.limit)
+        if args.preselected_chunks
+        else iter_signposts(Path(args.chunks), args.limit, question_terms)
+    )
     total = 0
     batches = 0
     started_at = time.monotonic()
     batch: list[dict[str, Any]] = []
-    log_progress("started", collection=args.collection, limit=args.limit, batch_size=args.batch_size)
+    log_progress(
+        "started",
+        collection=args.collection,
+        model=args.model_id,
+        dimension=vector_size,
+        limit=args.limit,
+        batch_size=args.batch_size,
+    )
     for chunk in chunks:
         batch.append(chunk)
         if len(batch) >= args.batch_size:
-            upsert_batch(client, model, args.collection, batch, total, args.encode_batch_size)
+            upsert_batch(
+                client,
+                model,
+                args.collection,
+                batch,
+                total,
+                args.encode_batch_size,
+                document_prefix=args.document_prefix,
+                document_prompt_name=args.document_prompt_name,
+            )
             total += len(batch)
             batches += 1
             batch = []
             if args.progress_every > 0 and batches % args.progress_every == 0:
                 log_progress("progress", points=total, batches=batches, elapsed_s=round(time.monotonic() - started_at, 1))
     if batch:
-        upsert_batch(client, model, args.collection, batch, total, args.encode_batch_size)
+        upsert_batch(
+            client,
+            model,
+            args.collection,
+            batch,
+            total,
+            args.encode_batch_size,
+            document_prefix=args.document_prefix,
+            document_prompt_name=args.document_prompt_name,
+        )
         total += len(batch)
         batches += 1
 
@@ -186,8 +261,17 @@ def build_vectors(args: argparse.Namespace) -> None:
         source_chunks=Path(args.chunks),
         question_bank_paths=args.question_bank,
         point_count=total,
-        embedding_precision="float16" if args.fp16 else "float32",
+        model_id=args.model_id,
+        dimension=vector_size,
+        query_prefix=args.query_prefix,
+        document_prefix=args.document_prefix,
+        query_prompt_name=args.query_prompt_name,
+        document_prompt_name=args.document_prompt_name,
+        truncate_dim=args.truncate_dim,
+        embedding_precision=args.precision,
         max_seq_length=args.max_seq_length,
+        signpost_rules=PRESELECTED_SIGNPOST_RULES if args.preselected_chunks else SIGNPOST_RULES,
+        selection_manifest=args.selection_manifest,
     )
     manifest_out = Path(args.manifest_out)
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +294,24 @@ def iter_signposts(path: Path, limit: int | None, question_terms: set[str]):
             chunk = json.loads(line)
             if not is_signpost(chunk, question_terms):
                 continue
+            chunk_id = chunk["chunk_id"]
+            if chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            yield chunk
+            count += 1
+            if limit is not None and count >= limit:
+                return
+
+
+def iter_preselected_chunks(path: Path, limit: int | None):
+    count = 0
+    seen: set[str] = set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
             chunk_id = chunk["chunk_id"]
             if chunk_id in seen:
                 continue
@@ -245,7 +347,6 @@ def load_question_terms(paths: list[Path]) -> set[str]:
                         row.get("title"),
                         row.get("prompt"),
                         " ".join(row.get("scenario") or []),
-                        " ".join(row.get("reference_facts") or []),
                     ]
                     if part
                 ).lower()
@@ -289,26 +390,42 @@ def build_dense_manifest(
     source_chunks: Path,
     question_bank_paths: list[str],
     point_count: int,
+    model_id: str = DEFAULT_MODEL_ID,
+    dimension: int = 384,
+    query_prefix: str = DEFAULT_QUERY_PREFIX,
+    document_prefix: str = DEFAULT_DOCUMENT_PREFIX,
+    query_prompt_name: str | None = None,
+    document_prompt_name: str | None = None,
+    truncate_dim: int | None = None,
     embedding_precision: str = "float32",
     max_seq_length: int = 512,
+    signpost_rules: list[str] | None = None,
+    selection_manifest: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    manifest = {
         "manifest_version": 1,
         "corpus_id": corpus_manifest["corpus_id"],
-        "model": MODEL_ID,
-        "dimension": VECTOR_SIZE,
+        "model": model_id,
+        "dimension": dimension,
         "collection": collection,
-        "query_prefix": QUERY_PREFIX,
+        "query_prefix": query_prefix,
+        "document_prefix": document_prefix,
+        "query_prompt_name": query_prompt_name,
+        "document_prompt_name": document_prompt_name,
+        "truncate_dim": truncate_dim,
         "normalized": True,
         "embedding_precision": embedding_precision,
         "max_seq_length": max_seq_length,
         "quantization": QUANTIZATION,
         "vectors_on_disk": True,
         "point_count": point_count,
-        "signpost_rules": SIGNPOST_RULES,
+        "signpost_rules": signpost_rules or SIGNPOST_RULES,
         "source_chunks": str(source_chunks),
         "question_bank_paths": question_bank_paths,
     }
+    if selection_manifest:
+        manifest["selection_manifest"] = selection_manifest
+    return manifest
 
 
 def expand_question_bank_paths(paths: list[Path]) -> list[Path]:
@@ -328,15 +445,19 @@ def upsert_batch(
     batch: list[dict[str, Any]],
     offset: int,
     encode_batch_size: int,
+    *,
+    document_prefix: str = DEFAULT_DOCUMENT_PREFIX,
+    document_prompt_name: str | None = None,
 ) -> None:
     from qdrant_client.http.models import PointStruct
 
-    texts = [document_text(chunk) for chunk in batch]
-    vectors = model.encode(
+    texts = [document_prefix + document_text(chunk) for chunk in batch]
+    vectors = encode_texts(
+        model,
         texts,
         batch_size=encode_batch_size,
         normalize_embeddings=True,
-        show_progress_bar=False,
+        prompt_name=document_prompt_name,
     ).tolist()
     points = [
         PointStruct(
@@ -359,8 +480,60 @@ def document_text(chunk: dict[str, Any]) -> str:
     return "\n\n".join(str(part) for part in parts if part)
 
 
-def serve_embeddings(host: str, port: int, fp16: bool, max_seq_length: int) -> None:
-    model = load_model(fp16, max_seq_length)
+def encode_texts(
+    model: Any,
+    texts: str | list[str],
+    *,
+    normalize_embeddings: bool = True,
+    batch_size: int | None = None,
+    prompt_name: str | None = None,
+):
+    kwargs: dict[str, Any] = {
+        "normalize_embeddings": normalize_embeddings,
+        "show_progress_bar": False,
+    }
+    if batch_size is not None:
+        kwargs["batch_size"] = batch_size
+    if prompt_name:
+        kwargs["prompt_name"] = prompt_name
+    return model.encode(texts, **kwargs)
+
+
+def embedding_dimension(
+    model: Any,
+    document_prefix: str = DEFAULT_DOCUMENT_PREFIX,
+    document_prompt_name: str | None = None,
+) -> int:
+    dimension = model.get_sentence_embedding_dimension()
+    if dimension is not None:
+        return int(dimension)
+    vector = encode_texts(
+        model,
+        document_prefix + "dimension probe",
+        normalize_embeddings=True,
+        prompt_name=document_prompt_name,
+    )
+    return int(len(vector))
+
+
+def serve_embeddings(
+    *,
+    host: str,
+    port: int,
+    model_id: str,
+    query_prefix: str,
+    query_prompt_name: str | None,
+    truncate_dim: int | None,
+    precision: str,
+    max_seq_length: int,
+) -> None:
+    model = load_model(
+        model_id,
+        precision=precision,
+        max_seq_length=max_seq_length,
+        truncate_dim=truncate_dim,
+    )
+    vector_size = embedding_dimension(model, query_prefix, query_prompt_name)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:  # noqa: N802
@@ -373,7 +546,12 @@ def serve_embeddings(host: str, port: int, fp16: bool, max_seq_length: int) -> N
             if not isinstance(query, str):
                 self.send_error(400, "query must be a string")
                 return
-            vector = model.encode(QUERY_PREFIX + query, normalize_embeddings=True).tolist()
+            vector = encode_texts(
+                model,
+                query_prefix + query,
+                normalize_embeddings=True,
+                prompt_name=query_prompt_name,
+            ).tolist()
             body = json.dumps({"embedding": vector}).encode("utf-8")
             self.send_response(200)
             self.send_header("content-type", "application/json")
@@ -388,11 +566,15 @@ def serve_embeddings(host: str, port: int, fp16: bool, max_seq_length: int) -> N
     print(
         json.dumps(
             {
-                "model": MODEL_ID,
+                "model": model_id,
                 "host": host,
                 "port": port,
                 "path": "/embed",
-                "embedding_precision": "float16" if fp16 else "float32",
+                "dimension": vector_size,
+                "query_prefix": query_prefix,
+                "query_prompt_name": query_prompt_name,
+                "truncate_dim": truncate_dim,
+                "embedding_precision": precision,
                 "max_seq_length": max_seq_length,
             }
         )

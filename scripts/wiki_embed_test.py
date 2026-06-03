@@ -148,25 +148,32 @@ class WikiEmbedTest(unittest.TestCase):
 
         self.assertEqual([row["chunk_id"] for row in signposts], ["1:lead", "3:burns"])
 
-    def test_dense_manifest_records_arctic_contract(self) -> None:
+    def test_dense_manifest_records_embedding_contract(self) -> None:
         manifest = wiki_embed.build_dense_manifest(
             corpus_manifest={"corpus_id": "corpus-123"},
-            collection="wikipedia_arctic_s",
+            collection="wikipedia_embeddinggemma",
             source_chunks=Path("data/wiki/full/chunks.jsonl"),
             question_bank_paths=["data/question_bank"],
             point_count=42,
+            model_id="google/embeddinggemma-300m",
+            dimension=768,
+            query_prefix="",
+            document_prefix="",
+            query_prompt_name="query",
+            document_prompt_name="document",
+            truncate_dim=None,
+            embedding_precision="bfloat16",
         )
 
         self.assertEqual(manifest["corpus_id"], "corpus-123")
-        self.assertEqual(manifest["model"], "Snowflake/snowflake-arctic-embed-s")
-        self.assertEqual(manifest["dimension"], 384)
-        self.assertEqual(manifest["collection"], "wikipedia_arctic_s")
-        self.assertEqual(
-            manifest["query_prefix"],
-            "Represent this sentence for searching relevant passages: ",
-        )
+        self.assertEqual(manifest["model"], "google/embeddinggemma-300m")
+        self.assertEqual(manifest["dimension"], 768)
+        self.assertEqual(manifest["collection"], "wikipedia_embeddinggemma")
+        self.assertEqual(manifest["query_prefix"], "")
+        self.assertEqual(manifest["query_prompt_name"], "query")
+        self.assertEqual(manifest["document_prompt_name"], "document")
         self.assertTrue(manifest["normalized"])
-        self.assertEqual(manifest["embedding_precision"], "float32")
+        self.assertEqual(manifest["embedding_precision"], "bfloat16")
         self.assertEqual(manifest["max_seq_length"], 512)
         self.assertEqual(manifest["quantization"], "turbo-bits4")
         self.assertTrue(manifest["vectors_on_disk"])

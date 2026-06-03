@@ -59,6 +59,11 @@ type SearchToolSpec = {
   ) => Promise<WikiSearchResponse>;
 };
 
+type ResearchSearchHit = ReturnType<typeof formatSearchForTool>['hits'][number] & {
+  queries: string[];
+  firstRank: number;
+};
+
 export type PiWikiAgentResult = {
   completion: string;
   retrievalTrace: RetrievalTrace;
@@ -78,7 +83,9 @@ export async function runPiWikiAgent(params: {
   const { config, modelEntry, basePrompt, mode, wikiClient } = params;
   if (!config.wiki) throw new Error(`missing wiki config for candidateMode: ${mode}`);
   if (modelEntry.router !== 'openrouter') {
-    throw new Error(`Pi wiki agent requires an OpenRouter model, got router: ${modelEntry.router}`);
+    throw new Error(
+      `Pi wiki agent requires an OpenRouter model, got router: ${modelEntry.router}`,
+    );
   }
 
   const trace = createTrace(mode);
@@ -91,7 +98,10 @@ export async function runPiWikiAgent(params: {
     const currentAgent = agentRef.current;
     if (!currentAgent) return undefined;
     const maxTurns = config.wiki?.limits.maxTurns;
-    if (maxTurns != null && countAssistantTurns(currentAgent.state.messages) >= maxTurns) {
+    if (
+      maxTurns != null &&
+      countAssistantTurns(currentAgent.state.messages) >= maxTurns
+    ) {
       return {
         context: {
           systemPrompt: currentAgent.state.systemPrompt,
@@ -181,11 +191,15 @@ export async function runPiWikiAgent(params: {
   const assistant = lastAssistant ?? findLastAssistantMessage(agent.state.messages);
   if (!assistant) {
     const redacted = redactSecrets(finalMessages);
-    throw new Error(`Pi agent did not produce an assistant message: ${JSON.stringify(redacted)}`);
+    throw new Error(
+      `Pi agent did not produce an assistant message: ${JSON.stringify(redacted)}`,
+    );
   }
 
   if (assistant.stopReason === 'error' || assistant.stopReason === 'aborted') {
-    throw new Error(assistant.errorMessage ?? `Pi agent stopped with ${assistant.stopReason}`);
+    throw new Error(
+      assistant.errorMessage ?? `Pi agent stopped with ${assistant.stopReason}`,
+    );
   }
 
   const completion = normalizeFinalAnswerText(assistantText(assistant));
@@ -204,39 +218,78 @@ export async function runPiWikiAgent(params: {
 }
 
 function buildPiAgentSystemPrompt(mode: CandidateMode): string {
-  const toolGuidance =
-    mode === 'agent-wiki'
-      ? [
-          'You must use the local offline Wikipedia tools before answering.',
-          '',
-          'Workflow for every question:',
-          '- Use at least one Wikipedia search before answering. Choose the first search by the prompt: use wiki_search for exact named devices, chemicals, diseases, materials, article titles, or technical terms; use wiki_hybrid_search for broad factual discovery when both exact terms and semantic matches matter.',
-          '- Build search queries from distinctive nouns in the user prompt: materials, tools, chemicals, measurements, symptoms, named designs, failed methods, and desired outcome. Do not search only the failed method.',
-          '- For troubleshooting questions, include the unusual available resources in the query. Example: if a low-carbon steel chisel failed to harden and the prompt mentions charcoal, leather, and bones, search for those materials plus hardening/case-hardening.',
-          `- Aim for ${AGENT_WIKI_RECOMMENDED_SEARCH_CALLS} searches when useful. Run a second search with different wording when the first results are thin, ambiguous, or only adjacent: use wiki_search for exact names, chemicals, diseases, materials, article titles, or technical terms, or wiki_semantic_search for concepts and synonyms when wording may differ.`,
-          '- Compare the returned titles, snippets, sources, articleIds, and chunkIds. Do not assume the first result is best.',
-          '- Prefer article lead/overview chunks over narrow subtype chunks when the title is relevant but the heading path is adjacent or unrelated.',
-          '- Read a chunk with wiki_read when search snippets are insufficient or when you rely on a specific factual claim.',
-          '- If a read chunk is adjacent, vague, or not directly useful, run one refined search and read a better chunk.',
-          '- Use wiki_literal_search only after search/read, with an exact copied phrase and a known chunkId or articleId.',
-          '- When you have enough context, provide the final answer. You may use final_answer for deterministic submission, but plain text is also accepted.',
-          '- Do not describe your search process, tool calls, retrieval, Wikipedia, or this harness in the final answer.',
-          '',
-          'Search selection:',
-          '- Use wiki_search first for exact named devices, chemicals, diseases, materials, article titles, or technical terms.',
-          '- Use wiki_hybrid_search for broad search because it combines BM25 and dense retrieval.',
-          '- Use wiki_semantic_search when wording is vague, conceptual, or likely to differ from the article text.',
-          '- Use wiki_literal_search only after search/read, with an exact copied phrase and a known chunkId or articleId.',
-          '',
-          'Do not merely summarize search snippets. Turn the retrieved facts into an executable answer for the original scenario, with concrete checks or verification steps when relevant.',
-          'Treat snippets as leads, not evidence. Treat Wikipedia as useful but incomplete source material. Do not skip tools just because you already know the topic.',
-        ].join('\n')
-      : `You may use offline Wikipedia tools. The search tool uses ${searchModeForCandidateMode(mode)} retrieval over a local Wikipedia index. Search when factual background would materially improve the answer, read chunks before relying on snippets, and treat Wikipedia as useful but fallible source material.`;
+  const toolGuidance = (() => {
+    if (mode === 'agent-wiki') {
+      return [
+        'You must use the local offline Wikipedia tools before answering.',
+        '',
+        'Workflow for every question:',
+        '- Use at least one Wikipedia search before answering. Choose the first search by the prompt: use wiki_search for exact named devices, chemicals, diseases, materials, article titles, or technical terms; use wiki_hybrid_search for broad factual discovery when both exact terms and semantic matches matter.',
+        '- Build search queries from distinctive nouns in the user prompt: materials, tools, chemicals, measurements, symptoms, named designs, failed methods, and desired outcome. Do not search only the failed method.',
+        '- For troubleshooting questions, include unusual available resources, symptoms, measurements, failed attempts, and desired outcome in the query.',
+        `- Aim for ${AGENT_WIKI_RECOMMENDED_SEARCH_CALLS} searches when useful. Run a second search with different wording when the first results are thin, ambiguous, or only adjacent: use wiki_search for exact names, chemicals, diseases, materials, article titles, or technical terms, or wiki_semantic_search for concepts and synonyms when wording may differ.`,
+        '- Compare the returned titles, snippets, sources, articleIds, and chunkIds. Do not assume the first result is best.',
+        '- Prefer article lead/overview chunks over narrow subtype chunks when the title is relevant but the heading path is adjacent or unrelated.',
+        '- Read a chunk with wiki_read when search snippets are insufficient or when you rely on a specific factual claim.',
+        '- If a read chunk is adjacent, vague, or not directly useful, run one refined search and read a better chunk.',
+        '- Use wiki_literal_search only after search/read, with an exact copied phrase and a known chunkId or articleId.',
+        '- When you have enough context, provide the final answer. You may use final_answer for deterministic submission, but plain text is also accepted.',
+        '- Do not describe your search process, tool calls, retrieval, Wikipedia, or this harness in the final answer.',
+        '',
+        'Search selection:',
+        '- Use wiki_search first for exact named devices, chemicals, diseases, materials, article titles, or technical terms.',
+        '- Use wiki_hybrid_search for broad search because it combines BM25 and dense retrieval.',
+        '- Use wiki_semantic_search when wording is vague, conceptual, or likely to differ from the article text.',
+        '- Use wiki_literal_search only after search/read, with an exact copied phrase and a known chunkId or articleId.',
+        '',
+        'Do not merely summarize search snippets. Turn the retrieved facts into an executable answer for the original scenario, with concrete checks or verification steps when relevant.',
+        'Treat snippets as leads, not evidence. Treat Wikipedia as useful but incomplete source material. Do not skip tools just because you already know the topic.',
+      ].join('\n');
+    }
+
+    if (mode === 'agent-bm25') {
+      return [
+        'You must use the local offline Wikipedia BM25 tools before answering.',
+        '',
+        'Workflow for every question:',
+        '- Use wiki_search at least once before answering. It is a lexical BM25 search over local offline Wikipedia.',
+        '- Build concise queries from distinctive words in the original prompt: materials, tools, chemicals, measurements, symptoms, named designs, failed methods, and desired outcome.',
+        '- Compare returned titles, snippets, articleIds, and chunkIds. Do not assume the first result is best.',
+        '- Use wiki_read for a relevant chunk before relying on a specific factual claim. Treat snippets as leads, not evidence.',
+        '- If the first search is thin or only adjacent, run one refined BM25 search with different exact terms.',
+        '- When you have enough context, provide the final answer. You may use final_answer for deterministic submission, but plain text is also accepted.',
+        '- Do not describe your search process, tool calls, retrieval, Wikipedia, or this harness in the final answer.',
+        '',
+        'Do not merely summarize search snippets. Turn the retrieved facts into an executable answer for the original scenario, with concrete checks or verification steps when relevant.',
+        'Treat Wikipedia as useful but incomplete source material. If retrieved context is irrelevant or incomplete, answer conservatively and state uncertainty.',
+      ].join('\n');
+    }
+
+    if (mode === 'agent-bm25-research') {
+      return [
+        'You must use the local offline Wikipedia research tools before answering.',
+        '',
+        'Workflow for every question:',
+        '- Use wiki_research first. It accepts multiple exact BM25-style queries and returns deduped Wikipedia candidates with the queries that matched each hit.',
+        '- Provide 2-4 query variants when possible: one literal query from the scenario, one query with the key material/tool/symptom names, and one query for the underlying rule, hazard, ratio, or procedure.',
+        '- Compare titles, headings, matched queries, snippets, articleIds, and chunkIds. Do not assume the first result is best.',
+        '- Use wiki_read before relying on a concrete factual claim. Snippets are leads, not evidence.',
+        '- For safety, medicine, chemistry, mechanics, ratios, load-bearing, fire, poison, pressure, electricity, birth, or directional procedures, read at least one relevant chunk and verify surprising directionality or hazards with a second search or read when possible.',
+        '- If retrieved context is irrelevant, adjacent, or seems to contradict the scenario, ignore it and answer conservatively from first principles rather than forcing it into the answer.',
+        '- When you have enough context, provide the final answer. You may use final_answer for deterministic submission, but plain text is also accepted.',
+        '- Do not describe your search process, tool calls, retrieval, Wikipedia, or this harness in the final answer.',
+        '',
+        'Do not merely summarize search snippets. Turn retrieved facts into an executable answer for the original scenario, with concrete checks, verification steps, and safe stop conditions when relevant.',
+      ].join('\n');
+    }
+
+    return `You may use offline Wikipedia tools. The search tool uses ${searchModeForCandidateMode(mode)} retrieval over a local Wikipedia index. Search when factual background would materially improve the answer, read chunks before relying on snippets, and treat Wikipedia as useful but fallible source material.`;
+  })();
   return [
     CANDIDATE_SYSTEM_PROMPT,
     '',
     toolGuidance,
-    mode === 'agent-wiki'
+    mode === 'agent-wiki' || mode === 'agent-bm25' || mode === 'agent-bm25-research'
       ? 'Use only the provided wiki tools and final_answer. Keep the final answer practical, conservative, and safety-aware. If final_answer is awkward for your format, answer normally in plain text after using the wiki tools.'
       : 'Use only the provided wiki tools. When you have enough context, stop using tools and provide the final answer directly for judging. Keep the answer practical, conservative, and safety-aware.',
   ].join('\n');
@@ -250,12 +303,18 @@ async function repairAgentOutputIfNeeded(params: {
   basePrompt: string;
 }): Promise<AssistantMessage | undefined> {
   const { agent, mode, trace, basePrompt } = params;
-  let lastAssistant = params.lastAssistant ?? findLastAssistantMessage(agent.state.messages);
+  let lastAssistant =
+    params.lastAssistant ?? findLastAssistantMessage(agent.state.messages);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const completion = lastAssistant ? normalizeFinalAnswerText(assistantText(lastAssistant)) : '';
+    const completion = lastAssistant
+      ? normalizeFinalAnswerText(assistantText(lastAssistant))
+      : '';
     const issue = agentRepairIssue({ mode, trace, completion });
     if (!issue) return lastAssistant;
+
+    trace.repairAttemptCount += 1;
+    trace.repairReasons.push(repairIssueReason(issue));
 
     if (issue.kind === 'final') {
       agent.state.tools = [];
@@ -269,16 +328,18 @@ async function repairAgentOutputIfNeeded(params: {
   return lastAssistant;
 }
 
-type AgentRepairIssue =
-  | { kind: 'retrieval'; searchCount: number }
-  | { kind: 'final' };
+type AgentRepairIssue = { kind: 'retrieval'; searchCount: number } | { kind: 'final' };
 
 function agentRepairIssue(params: {
   mode: CandidateMode;
   trace: RetrievalTrace;
   completion: string;
 }): AgentRepairIssue | undefined {
-  if (params.mode === 'agent-wiki') {
+  if (
+    params.mode === 'agent-wiki' ||
+    params.mode === 'agent-bm25' ||
+    params.mode === 'agent-bm25-research'
+  ) {
     const searchCount = params.trace.searches.length;
     if (searchCount < AGENT_WIKI_MIN_SEARCH_CALLS) {
       return { kind: 'retrieval', searchCount };
@@ -292,6 +353,13 @@ function agentRepairIssue(params: {
     return { kind: 'final' };
   }
   return undefined;
+}
+
+function repairIssueReason(issue: AgentRepairIssue): string {
+  if (issue.kind === 'retrieval') {
+    return `retrieval_required_searches_missing:${issue.searchCount}`;
+  }
+  return 'missing_or_malformed_final_answer';
 }
 
 function repairPrompt(issue: AgentRepairIssue, basePrompt: string): string {
@@ -327,8 +395,8 @@ function normalizeFinalAnswerText(raw: string): string {
     return '';
   }
 
-  const embeddedAnswer = extractJsonStringField(trimmed, 'answer');
-  if (embeddedAnswer != null) return embeddedAnswer.trim();
+  const wholeJsonAnswer = extractWholeJsonAnswer(trimmed);
+  if (wholeJsonAnswer != null) return wholeJsonAnswer.trim();
 
   const finalTag = /<final_answer>\s*([\s\S]*?)\s*<\/final_answer>/i.exec(trimmed);
   if (finalTag?.[1]) return cleanTerminalTags(finalTag[1]);
@@ -347,8 +415,14 @@ function cleanTerminalTags(input: string): string {
 
 function stripNativeChannelMarkup(input: string): string {
   let output = input.trim();
-  output = output.replace(/^<\|channel>\s*(?:thought|analysis|final|commentary)\s*<channel\|>\s*/i, '');
-  output = output.replace(/<\|channel>\s*(?:thought|analysis|final|commentary)\s*<channel\|>/gi, '');
+  output = output.replace(
+    /^<\|channel>\s*(?:thought|analysis|final|commentary)\s*<channel\|>\s*/i,
+    '',
+  );
+  output = output.replace(
+    /<\|channel>\s*(?:thought|analysis|final|commentary)\s*<channel\|>/gi,
+    '',
+  );
   output = output.replace(/^<\|(?:thought|analysis|final|commentary)\|>\s*/i, '');
   output = output.replace(/<\|(?:thought|analysis|final|commentary)\|>/gi, '');
   return output;
@@ -402,21 +476,26 @@ function isMetaNonAnswerOutput(text: string): boolean {
     /\b(?:i|we) (?:need|should|will) (?:to )?(?:address|include|provide|make sure|structure|craft|answer)\b/,
     /\b(?:i|we) (?:will|should|need to) (?:produce|give|supply|draft|craft) (?:the )?final answer\b/,
   ];
-  if (genericPlanningPatterns.some((pattern) => pattern.test(lower)) && answerWords < 120) {
+  if (
+    genericPlanningPatterns.some((pattern) => pattern.test(lower)) &&
+    answerWords < 120
+  ) {
     return true;
   }
 
-  if (answerWords < 25 && /\b(?:search|read|tool|retriev|wikipedia)\b/.test(lower)) return true;
+  if (answerWords < 25 && /\b(?:search|read|tool|retriev|wikipedia)\b/.test(lower))
+    return true;
   return false;
 }
 
-function extractJsonStringField(input: string, field: string): string | undefined {
-  const match = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`).exec(input);
-  if (!match?.[1]) return undefined;
+function extractWholeJsonAnswer(input: string): string | undefined {
+  if (!input.startsWith('{') || !input.endsWith('}')) return undefined;
   try {
-    return JSON.parse(`"${match[1]}"`) as string;
+    const parsed = JSON.parse(input) as unknown;
+    if (!isRecord(parsed) || typeof parsed.answer !== 'string') return undefined;
+    return parsed.answer;
   } catch {
-    return match[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+    return undefined;
   }
 }
 
@@ -472,6 +551,8 @@ function createTrace(mode: CandidateMode): RetrievalTrace {
     mode,
     queries: [],
     toolCallCount: 0,
+    repairAttemptCount: 0,
+    repairReasons: [],
     toolCalls: [],
     searches: [],
     reads: [],
@@ -487,65 +568,70 @@ function createWikiTools(params: {
   trace: RetrievalTrace;
 }): AgentTool[] {
   const { mode, wiki, client, trace } = params;
-  const searchTools = searchToolsForCandidateMode(mode).map((searchTool): AgentTool => ({
-    name: searchTool.name,
-    label: searchTool.label,
-    description: searchTool.description,
-    parameters: Type.Object({
-      query: Type.String({ minLength: 1 }),
-      topK: Type.Optional(Type.Number({ minimum: 1, maximum: wiki.limits.searchTopK })),
-      articleId: Type.Optional(Type.String({ minLength: 1 })),
-      chunkId: Type.Optional(Type.String({ minLength: 1 })),
-    }),
-    executionMode: 'sequential',
-    execute: async (toolCallId, input) => {
-      const args = input as {
-        query: string;
-        topK?: number;
-        articleId?: string;
-        chunkId?: string;
-      };
-      const query = args.query;
-      const topK =
-        typeof args.topK === 'number'
-          ? Math.min(Math.max(Math.floor(args.topK), 1), wiki.limits.searchTopK)
-          : wiki.limits.searchTopK;
-      const request = {
-        query,
-        topK,
-        articleId: args.articleId,
-        chunkId: args.chunkId,
-      };
-      const toolTrace = ensureToolCallTrace(trace, {
-        toolCallId,
-        toolName: searchTool.name,
-        args: request,
-      });
-      try {
-        const search = await searchTool.execute(client, request);
-        trace.queries.push(query);
-        trace.searches.push(traceSearch(search));
-        const formatted = formatSearchForTool(search);
-        const result = {
-          content: [{ type: 'text' as const, text: JSON.stringify(formatted) }],
-          details: formatted,
+  const researchTools =
+    mode === 'agent-bm25-research' ? [createResearchTool({ wiki, client, trace })] : [];
+  const searchTools = searchToolsForCandidateMode(mode).map(
+    (searchTool): AgentTool => ({
+      name: searchTool.name,
+      label: searchTool.label,
+      description: searchTool.description,
+      parameters: Type.Object({
+        query: Type.String({ minLength: 1 }),
+        topK: Type.Optional(Type.Number({ minimum: 1, maximum: wiki.limits.searchTopK })),
+        articleId: Type.Optional(Type.String({ minLength: 1 })),
+        chunkId: Type.Optional(Type.String({ minLength: 1 })),
+      }),
+      executionMode: 'sequential',
+      execute: async (toolCallId, input) => {
+        const args = input as {
+          query: string;
+          topK?: number;
+          articleId?: string;
+          chunkId?: string;
         };
-        finishToolCallTrace(toolTrace, {
-          status: 'ok',
-          result: summarizeSearchToolResult(result.content, search),
+        const query = args.query;
+        const topK =
+          typeof args.topK === 'number'
+            ? Math.min(Math.max(Math.floor(args.topK), 1), wiki.limits.searchTopK)
+            : wiki.limits.searchTopK;
+        const request = {
+          query,
+          topK,
+          articleId: args.articleId,
+          chunkId: args.chunkId,
+        };
+        const toolTrace = ensureToolCallTrace(trace, {
+          toolCallId,
+          toolName: searchTool.name,
+          args: request,
         });
-        return result;
-      } catch (error) {
-        finishToolCallTrace(toolTrace, {
-          status: 'error',
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
-    },
-  }));
+        try {
+          const search = await searchTool.execute(client, request);
+          trace.queries.push(query);
+          trace.searches.push(traceSearch(search));
+          const formatted = formatSearchForTool(search);
+          const result = {
+            content: [{ type: 'text' as const, text: JSON.stringify(formatted) }],
+            details: formatted,
+          };
+          finishToolCallTrace(toolTrace, {
+            status: 'ok',
+            result: summarizeSearchToolResult(result.content, search),
+          });
+          return result;
+        } catch (error) {
+          finishToolCallTrace(toolTrace, {
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      },
+    }),
+  );
 
   return [
+    ...researchTools,
     ...searchTools,
     {
       name: 'wiki_read',
@@ -554,7 +640,9 @@ function createWikiTools(params: {
         'Read a bounded Wikipedia chunk returned by a wiki search tool. Use chunkId from a search hit.',
       parameters: Type.Object({
         chunkId: Type.String({ minLength: 1 }),
-        maxChars: Type.Optional(Type.Number({ minimum: 1, maximum: wiki.limits.readMaxChars })),
+        maxChars: Type.Optional(
+          Type.Number({ minimum: 1, maximum: wiki.limits.readMaxChars }),
+        ),
       }),
       executionMode: 'sequential',
       execute: async (toolCallId, input) => {
@@ -613,6 +701,92 @@ function createWikiTools(params: {
       },
     },
   ];
+}
+
+function createResearchTool(params: {
+  wiki: NonNullable<ApocbenchConfig['wiki']>;
+  client: WikiAgentClient;
+  trace: RetrievalTrace;
+}): AgentTool {
+  const { wiki, client, trace } = params;
+  return {
+    name: 'wiki_research',
+    label: 'Wikipedia BM25 research',
+    description:
+      'Run 1-4 lexical BM25 searches over local offline Wikipedia, merge and dedupe the hits, and return candidates annotated by which query matched. Use this before wiki_read for robust factual discovery.',
+    parameters: Type.Object({
+      query: Type.String({ minLength: 1 }),
+      query2: Type.Optional(Type.String({ minLength: 1 })),
+      query3: Type.Optional(Type.String({ minLength: 1 })),
+      query4: Type.Optional(Type.String({ minLength: 1 })),
+      topK: Type.Optional(Type.Number({ minimum: 1, maximum: wiki.limits.searchTopK })),
+    }),
+    executionMode: 'sequential',
+    execute: async (toolCallId, input) => {
+      const args = input as {
+        query: string;
+        query2?: string;
+        query3?: string;
+        query4?: string;
+        topK?: number;
+      };
+      const topK =
+        typeof args.topK === 'number'
+          ? Math.min(Math.max(Math.floor(args.topK), 1), wiki.limits.searchTopK)
+          : wiki.limits.searchTopK;
+      const queries = [args.query, args.query2, args.query3, args.query4]
+        .filter((query): query is string => typeof query === 'string')
+        .map((query) => query.trim())
+        .filter((query, index, all) => query.length > 0 && all.indexOf(query) === index)
+        .slice(0, 4);
+      const toolTrace = ensureToolCallTrace(trace, {
+        toolCallId,
+        toolName: 'wiki_research',
+        args: { ...args, topK },
+      });
+      try {
+        const searches = [];
+        for (const query of queries) {
+          const search = await client.search({ query, topK });
+          searches.push(search);
+          trace.queries.push(query);
+          trace.searches.push(traceSearch(search));
+        }
+        const formatted = formatResearchForTool(searches);
+        const result = {
+          content: [{ type: 'text' as const, text: JSON.stringify(formatted) }],
+          details: formatted,
+        };
+        finishToolCallTrace(toolTrace, {
+          status: 'ok',
+          result: {
+            contentText: result.content[0].text,
+            contentTextChars: result.content[0].text.length,
+            search: {
+              mode: 'bm25-research',
+              query: queries.join(' | '),
+              hitCount: formatted.hits.length,
+              topHits: formatted.hits.slice(0, 5).map((hit) => ({
+                articleId: hit.articleId,
+                chunkId: hit.chunkId,
+                title: hit.title,
+                score: hit.score,
+                bm25Score: hit.bm25Score,
+                sources: hit.sources,
+              })),
+            },
+          },
+        });
+        return result;
+      } catch (error) {
+        finishToolCallTrace(toolTrace, {
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+  };
 }
 
 function recordToolCallStart(
@@ -774,6 +948,8 @@ function searchToolsForCandidateMode(mode: CandidateMode): SearchToolSpec[] {
   switch (mode) {
     case 'agent-bm25':
       return [BM25_SEARCH_TOOL];
+    case 'agent-bm25-research':
+      return [];
     case 'agent-dense':
       return [SEMANTIC_SEARCH_TOOL];
     case 'agent-hybrid':
@@ -796,6 +972,7 @@ function searchToolsForCandidateMode(mode: CandidateMode): SearchToolSpec[] {
 function searchModeForCandidateMode(mode: CandidateMode): WikiSearchMode {
   switch (mode) {
     case 'agent-bm25':
+    case 'agent-bm25-research':
       return 'bm25';
     case 'agent-dense':
       return 'dense';
@@ -826,6 +1003,48 @@ function formatSearchForTool(search: WikiSearchResponse) {
       sources: hit.sources,
       snippet: hit.snippet,
     })),
+  };
+}
+
+function formatResearchForTool(searches: WikiSearchResponse[]) {
+  const byKey = new Map<string, ResearchSearchHit>();
+  for (const search of searches) {
+    const formatted = formatSearchForTool(search);
+    formatted.hits.forEach((hit, index) => {
+      const key = hit.chunkId ?? `${hit.articleId}:${hit.title}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.queries.push(search.query);
+        existing.firstRank = Math.min(existing.firstRank, index + 1);
+        existing.score = Math.max(existing.score ?? 0, hit.score ?? 0);
+        existing.bm25Score = Math.max(existing.bm25Score ?? 0, hit.bm25Score ?? 0);
+        existing.sources = Array.from(
+          new Set([...(existing.sources ?? []), ...(hit.sources ?? [])]),
+        );
+        return;
+      }
+      byKey.set(key, {
+        ...hit,
+        queries: [search.query],
+        firstRank: index + 1,
+      });
+    });
+  }
+
+  const hits = Array.from(byKey.values())
+    .sort(
+      (left, right) =>
+        right.queries.length - left.queries.length ||
+        left.firstRank - right.firstRank ||
+        (right.score ?? 0) - (left.score ?? 0) ||
+        left.title.localeCompare(right.title),
+    )
+    .slice(0, 10);
+
+  return {
+    mode: 'bm25-research',
+    queries: searches.map((search) => search.query),
+    hits,
   };
 }
 

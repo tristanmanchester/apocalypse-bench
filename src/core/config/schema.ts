@@ -57,6 +57,7 @@ const candidateModeSchema = z
     'rag-dense',
     'rag-hybrid',
     'agent-bm25',
+    'agent-bm25-research',
     'agent-dense',
     'agent-hybrid',
     'agent-wiki',
@@ -113,7 +114,8 @@ export function toOpenRouterProviderParam(
 
   const provider: Record<string, unknown> = {};
 
-  if (routing.requireParameters != null) provider.require_parameters = routing.requireParameters;
+  if (routing.requireParameters != null)
+    provider.require_parameters = routing.requireParameters;
   if (routing.allowFallbacks != null) provider.allow_fallbacks = routing.allowFallbacks;
   if (routing.order) provider.order = routing.order;
   if (routing.only) provider.only = routing.only;
@@ -139,6 +141,7 @@ export const configSchema = z
         questionLimit: z.number().int().positive().nullable().optional(),
         categories: z.array(z.string().min(1)).nullable().optional(),
         questionIds: z.array(z.string().min(1)).nullable().optional(),
+        candidateOnly: z.boolean().optional(),
         maxBudgetUsd: z.number().positive().nullable().optional(),
         retry: retryPolicySchema.optional(),
         concurrency: z
@@ -153,7 +156,8 @@ export const configSchema = z
         if (run.datasetPath && run.datasetPaths) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: 'Provide exactly one of run.datasetPath (string) or run.datasetPaths (string[]).',
+            message:
+              'Provide exactly one of run.datasetPath (string) or run.datasetPaths (string[]).',
             path: ['datasetPaths'],
           });
         }
@@ -234,7 +238,8 @@ export const configSchema = z
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Missing routers.openaiCompatible for models using router=openai-compatible.',
+        message:
+          'Missing routers.openaiCompatible for models using router=openai-compatible.',
         path: ['routers', 'openaiCompatible'],
       });
     }

@@ -17,7 +17,7 @@ import { loadConfig } from '../core/config/loadConfig';
 import type { ApocbenchConfig } from '../core/config/schema';
 import { expandDatasetPaths, loadJsonl, loadJsonlMany } from '../core/dataset/loadJsonl';
 import type { RunnerEvent } from '../core/runner/orchestrator';
-import { runBenchmark } from '../core/runner/orchestrator';
+import { runBenchmark, selectQuestions } from '../core/runner/orchestrator';
 import { sanitizeEvent } from '../core/runner/sanitizeEvent';
 import { diffSummaries, type RunSummary } from '../core/scoring/diff';
 import { renderHtmlReport } from '../reports/html/renderHtml';
@@ -39,7 +39,6 @@ import { openAndMigrate } from '../storage/sqlite/migrate';
 import { listRunModelResults } from '../storage/sqlite/queries';
 import { getRun } from '../storage/sqlite/runs';
 import { App } from '../ui/App';
-import { getTotalQuestions, getQuestionsPerModel } from '../ui/uiStats';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -108,8 +107,15 @@ async function runCommand(
     ? loadJsonlMany(config.run.datasetPaths)
     : loadJsonl(config.run.datasetPath!);
   const modelCount = config.models.length;
-  const questionsPerModel = getQuestionsPerModel(config, dataset.lines.length);
-  const totalQuestions = getTotalQuestions(config, dataset.lines.length, modelCount);
+  const selectedQuestionsCount = selectQuestions({
+    allQuestions: dataset.lines,
+    config,
+    limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
+    categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+    questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
+  }).length;
+  const questionsPerModel = selectedQuestionsCount;
+  const totalQuestions = selectedQuestionsCount * modelCount;
 
   // Keep a bounded event buffer so long runs don't exhaust the JS heap.
   // The UI only needs ~50 recent events for display (logs panel shows 16, plus some buffer).

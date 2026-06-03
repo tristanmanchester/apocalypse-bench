@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { ApocbenchConfig } from '../src/core/config/schema';
 import type { DatasetLine } from '../src/core/dataset/schema';
 import type { JudgeOutput } from '../src/core/runner/types';
-import { runBenchmark } from '../src/core/runner/orchestrator';
+import { runBenchmark, selectQuestions } from '../src/core/runner/orchestrator';
 import { generateText, type LanguageModel } from 'ai';
 import { judgeWithRubricCompletenessRetry } from '../src/core/runner/judge';
 
@@ -105,6 +105,19 @@ vi.mock('../src/core/runner/persistence', () => {
     ) => {
       const row = results.get(keyFor(runId, modelId, questionId));
       return row?.status === 'done' && Boolean(row.judgeParsedJson);
+    },
+    isRunCandidateDone: (
+      _db: unknown,
+      runId: string,
+      modelId: string,
+      questionId: string,
+    ) => {
+      const row = results.get(keyFor(runId, modelId, questionId));
+      return (
+        (row?.status === 'candidate_done' || row?.status === 'done') &&
+        typeof row.candidateCompletion === 'string' &&
+        row.candidateCompletion.trim().length > 0
+      );
     },
     upsertRunResult: (_db: unknown, params: ResultRow) => {
       const key = keyFor(params.runId, params.modelId, params.questionId);
@@ -276,6 +289,7 @@ async function getStore() {
           questionId: string;
           status?: string;
           candidateMetricsJson?: string | null;
+          candidateCompletion?: string | null;
           judgeParsedJson?: string | null;
         }
       >;
@@ -376,6 +390,89 @@ describe('runBenchmark regression coverage', () => {
 
     expect(generateTextMock).not.toHaveBeenCalled();
     expect(judgeMock).not.toHaveBeenCalled();
+  });
+
+  test('candidate-only resume skips rows that already have candidate text', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-only-resume');
+    const config: ApocbenchConfig = {
+      ...makeConfig({ outDir, resume: true }),
+      run: {
+        ...makeConfig({ outDir, resume: true }).run,
+        candidateOnly: true,
+      },
+    };
+    const questions = makeQuestions(1);
+    const runId = 'candidate-only-resume-test';
+    const { results } = await getStore();
+    results.set(`${runId}:m1:Q1`, {
+      runId,
+      modelId: 'm1',
+      questionId: 'Q1',
+      status: 'candidate_done',
+      candidateCompletion: 'existing candidate answer',
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: runId,
+    });
+
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
+  });
+
+  test('candidate-only runs store candidate text without resolving or calling judge', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-only');
+    const base = makeConfig({ outDir, resume: false });
+    const config: ApocbenchConfig = {
+      ...base,
+      run: {
+        ...base.run,
+        candidateOnly: true,
+      },
+    };
+    const resolveJudgeModel = vi.fn(() => fakeModel);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate-only answer',
+      usage: { prompt_tokens: 2, completion_tokens: 3 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'candidate-only-test',
+    });
+
+    expect(resolveJudgeModel).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
+
+    const { results } = await getStore();
+    const row = results.get('candidate-only-test:m1:Q1');
+    expect(row).toMatchObject({
+      status: 'candidate_done',
+      candidateCompletion: 'candidate-only answer',
+    });
   });
 
   test('candidate metrics store normalized usage', async () => {
@@ -682,6 +779,30 @@ describe('runBenchmark regression coverage', () => {
     expect(questionIds).toEqual(['Q2', 'Q4', 'Q5']);
   });
 
+  test('question selection helper matches runner questionIds and limit behavior', () => {
+    const config = makeConfig({ outDir: path.join(RUNS_ROOT, 'selection-helper') });
+    config.run.questionLimit = 1;
+    config.run.questionIds = ['Q2', 'Q4', 'Q5'];
+
+    const selected = selectQuestions({
+      allQuestions: makeQuestions(5),
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    expect(selected.map((q) => q.id)).toEqual(['Q2']);
+
+    const overrideSelected = selectQuestions({
+      allQuestions: makeQuestions(5),
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: ['Q2', 'Q4', 'Q5'],
+    });
+    expect(overrideSelected.map((q) => q.id)).toEqual(['Q2', 'Q4', 'Q5']);
+  });
+
   test('tool-intent non-answers are auto-failed before judging', async () => {
     const outDir = path.join(RUNS_ROOT, 'non-answer-autofail');
     const config = makeConfig({ outDir });
@@ -711,14 +832,14 @@ describe('runBenchmark regression coverage', () => {
 
     const { results } = await getStore();
     const row = Array.from(results.values()).find(
-      (entry) =>
-        entry.runId === 'non-answer-autofail-test' && entry.questionId === 'Q1',
+      (entry) => entry.runId === 'non-answer-autofail-test' && entry.questionId === 'Q1',
     );
     expect(row).toMatchObject({
       status: 'done',
       scoreOverall: 0,
       autoFail: true,
-      autoFailReason: 'candidate described tool/search intent instead of providing a final answer',
+      autoFailReason:
+        'candidate described tool/search intent instead of providing a final answer',
     });
     expect(JSON.parse(row?.judgeParsedJson ?? '{}')).toMatchObject({
       auto_fail: true,

@@ -12,6 +12,8 @@ export type RetrievalTrace = {
   mode: CandidateMode;
   queries: string[];
   toolCallCount: number;
+  repairAttemptCount: number;
+  repairReasons: string[];
   toolCalls: Array<{
     index: number;
     toolCallId: string;
@@ -128,7 +130,9 @@ export async function buildWikiGroundedCandidatePrompt(params: {
     '',
     'Offline Wikipedia context is available below. Use it when it is relevant, but do not overtrust it for safety-critical procedures. If context is irrelevant or incomplete, say so and rely on conservative safe fallback reasoning.',
     '',
-    contextParts.length > 0 ? contextParts.join('\n\n') : 'No relevant Wikipedia context was found.',
+    contextParts.length > 0
+      ? contextParts.join('\n\n')
+      : 'No relevant Wikipedia context was found.',
   ].join('\n');
 
   return {
@@ -137,6 +141,8 @@ export async function buildWikiGroundedCandidatePrompt(params: {
       mode,
       queries: [query],
       toolCallCount: 0,
+      repairAttemptCount: 0,
+      repairReasons: [],
       toolCalls: [],
       searches: [traceSearch(search)],
       reads: reads.map(traceRead),
@@ -147,12 +153,7 @@ export async function buildWikiGroundedCandidatePrompt(params: {
 }
 
 function buildRetrievalQuery(question: DatasetLine): string {
-  return [
-    question.title,
-    ...question.scenario,
-    question.prompt,
-    question.reference_facts?.join(' '),
-  ]
+  return [question.title, ...question.scenario, question.prompt]
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
     .join('\n');
 }
@@ -167,6 +168,7 @@ async function runSearch(params: {
   switch (params.mode) {
     case 'rag-bm25':
     case 'agent-bm25':
+    case 'agent-bm25-research':
       return params.client.search(request);
     case 'rag-dense':
     case 'agent-dense':
@@ -206,7 +208,9 @@ function traceSearch(search: WikiSearchResponse): RetrievalTrace['searches'][num
   };
 }
 
-function traceHit(hit: WikiSearchHit): RetrievalTrace['searches'][number]['hits'][number] {
+function traceHit(
+  hit: WikiSearchHit,
+): RetrievalTrace['searches'][number]['hits'][number] {
   return {
     articleId: hit.pointer.articleId,
     chunkId: hit.pointer.chunkId,

@@ -1,14 +1,25 @@
 import type { DbHandle } from './db';
 import type { DatasetLine } from '../../core/dataset/schema';
 
-export function insertQuestions(db: DbHandle, runId: string, questions: DatasetLine[]): void {
+export function insertQuestions(
+  db: DbHandle,
+  runId: string,
+  questions: DatasetLine[],
+): void {
   const stmt = db.prepare(
     `
-    INSERT OR REPLACE INTO questions (
+    INSERT INTO questions (
       run_id, question_id, category, difficulty, scenario, prompt, rubric_json, auto_fail_json
     ) VALUES (
       @run_id, @question_id, @category, @difficulty, @scenario, @prompt, @rubric_json, @auto_fail_json
     )
+    ON CONFLICT(run_id, question_id) DO UPDATE SET
+      category = excluded.category,
+      difficulty = excluded.difficulty,
+      scenario = excluded.scenario,
+      prompt = excluded.prompt,
+      rubric_json = excluded.rubric_json,
+      auto_fail_json = excluded.auto_fail_json
   `,
   );
 

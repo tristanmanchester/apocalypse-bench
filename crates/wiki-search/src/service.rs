@@ -47,6 +47,7 @@ struct DenseManifest {
     model: String,
     dimension: usize,
     collection: String,
+    #[allow(dead_code)]
     query_prefix: String,
     normalized: bool,
     embedding_precision: Option<String>,
@@ -366,9 +367,10 @@ impl WikiState {
 
     pub async fn search_dense(&self, query: &str, limit: usize) -> anyhow::Result<SearchResponse> {
         let started = Instant::now();
-        let dense = self.dense.as_ref().context(
-            "dense search is unavailable until Qdrant and Arctic embeddings are configured",
-        )?;
+        let dense = self
+            .dense
+            .as_ref()
+            .context("dense search is unavailable until Qdrant and an embedding service are configured")?;
         let embedding = self.embed_query(dense, query).await?;
         let qdrant_url = format!(
             "{}/collections/{}/points/search",
@@ -443,10 +445,12 @@ impl WikiState {
             .error_for_status()?
             .json()
             .await?;
-        if response.embedding.len() != 384 {
+        if response.embedding.len() != dense.manifest.dimension {
             anyhow::bail!(
-                "embedding service returned {} dimensions, expected 384 for Snowflake Arctic Embed S",
-                response.embedding.len()
+                "embedding service returned {} dimensions, expected {} for {}",
+                response.embedding.len(),
+                dense.manifest.dimension,
+                dense.manifest.model
             );
         }
         Ok(response.embedding)
@@ -831,17 +835,11 @@ impl DenseManifest {
                 self.corpus_id
             );
         }
-        if self.model != "Snowflake/snowflake-arctic-embed-s" {
-            anyhow::bail!(
-                "dense manifest model mismatch: expected Snowflake/snowflake-arctic-embed-s, got {}",
-                self.model
-            );
+        if self.model.trim().is_empty() {
+            anyhow::bail!("dense manifest model is empty");
         }
-        if self.dimension != 384 {
-            anyhow::bail!(
-                "dense manifest dimension mismatch: expected 384, got {}",
-                self.dimension
-            );
+        if self.dimension == 0 {
+            anyhow::bail!("dense manifest dimension must be greater than zero");
         }
         if self.collection != qdrant_collection {
             anyhow::bail!(
@@ -850,19 +848,16 @@ impl DenseManifest {
                 self.collection
             );
         }
-        if self.query_prefix != "Represent this sentence for searching relevant passages: " {
-            anyhow::bail!("dense manifest query prefix mismatch");
-        }
         if !self.normalized {
             anyhow::bail!("dense manifest must record normalized=true");
         }
         if let Some(precision) = &self.embedding_precision {
-            if precision != "float16" && precision != "float32" {
+            if precision != "float16" && precision != "float32" && precision != "bfloat16" {
                 anyhow::bail!("dense manifest embedding precision mismatch: got {precision}");
             }
         }
         if let Some(max_seq_length) = self.max_seq_length {
-            if max_seq_length == 0 || max_seq_length > 512 {
+            if max_seq_length == 0 || max_seq_length > 8192 {
                 anyhow::bail!("dense manifest max_seq_length mismatch: got {max_seq_length}");
             }
         }
@@ -874,12 +869,8 @@ impl DenseManifest {
         if self.point_count == 0 {
             anyhow::bail!("dense manifest contains zero points");
         }
-        if !self
-            .signpost_rules
-            .iter()
-            .any(|rule| rule == "all_article_leads")
-        {
-            anyhow::bail!("dense manifest must include all_article_leads signpost rule");
+        if self.signpost_rules.is_empty() {
+            anyhow::bail!("dense manifest must include at least one signpost rule");
         }
         Ok(())
     }
@@ -893,7 +884,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dense_manifest_rejects_wrong_model() {
+    fn dense_manifest_rejects_empty_model() {
         let corpus = CorpusManifest {
             manifest_version: 1,
             corpus_id: "corpus-1".to_string(),
@@ -905,7 +896,7 @@ mod tests {
         };
         let manifest = DenseManifest {
             corpus_id: "corpus-1".to_string(),
-            model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            model: "".to_string(),
             dimension: 384,
             collection: "wiki_dense".to_string(),
             query_prefix: "Represent this sentence for searching relevant passages: ".to_string(),
@@ -918,7 +909,7 @@ mod tests {
         };
 
         let err = manifest.validate(&corpus, "wiki_dense").unwrap_err();
-        assert!(err.to_string().contains("dense manifest model mismatch"));
+        assert!(err.to_string().contains("dense manifest model is empty"));
     }
 
     #[test]

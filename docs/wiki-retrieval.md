@@ -42,16 +42,20 @@ pnpm wiki:serve:fixture
 
 ## Dense embeddings
 
-Dense search uses only `Snowflake/snowflake-arctic-embed-s` with
-384-dimensional normalized vectors. The Qdrant collection is created with
-on-disk vector storage plus TurboQuant 4-bit quantization so the signpost index
-fits the laptop better than raw in-memory float vectors. Start Qdrant separately,
-then build dense signposts from all article leads plus deterministic
-practical/survival section matches and benchmark-question preselection:
+Dense search uses a manifest-driven Sentence Transformers embedding pipeline.
+The default remains `Snowflake/snowflake-arctic-embed-s`, but the build and
+serve commands can use any compatible model, dimension, prompt name, truncation,
+and float precision recorded in the dense manifest. The Qdrant collection is
+created with on-disk vector storage plus TurboQuant 4-bit quantization so the
+signpost index fits the laptop better than raw in-memory float vectors.
+
+Start Qdrant separately, then build dense signposts from all article leads plus
+deterministic practical/survival section matches and optional benchmark-question
+preselection:
 
 ```bash
 uv run --with sentence-transformers --with qdrant-client scripts/wiki_embed.py build \
-  --fp16 \
+  --precision float16 \
   --max-seq-length 256 \
   --chunks data/wiki/full/chunks.jsonl \
   --corpus-manifest data/wiki/full/manifest.json \
@@ -62,15 +66,20 @@ uv run --with sentence-transformers --with qdrant-client scripts/wiki_embed.py b
 ```
 
 The dense manifest records the corpus id, model id, vector dimension, query
-prefix, normalization setting, embedding precision, quantization, collection
-name, point count, and signpost selection rules. `wiki-search` refuses dense
-search if the manifest does not match the corpus, collection, Arctic S model, or
-384-dimensional vector contract.
+prefix, optional prompt names, normalization setting, embedding precision,
+quantization, collection name, point count, and signpost selection rules.
+`wiki-search` refuses dense search if the manifest does not match the corpus or
+collection, if the model/dimension fields are invalid, or if the embedding
+service returns a vector with the wrong dimension.
 
 Start the query embedding endpoint:
 
 ```bash
-uv run --with sentence-transformers scripts/wiki_embed.py serve --fp16 --max-seq-length 256 --host 127.0.0.1 --port 8766
+uv run --with sentence-transformers scripts/wiki_embed.py serve \
+  --precision float16 \
+  --max-seq-length 256 \
+  --host 127.0.0.1 \
+  --port 8766
 ```
 
 Then start `wiki-search` with dense environment variables:
@@ -94,7 +103,7 @@ Use `candidateMode` per model:
 - `rag-dense`: pre-retrieve with dense search
 - `rag-hybrid`: pre-retrieve with hybrid search
 - `agent-wiki`: production bounded tool-loop mode with all wiki tools exposed
-- `agent-bm25`, `agent-dense`, `agent-hybrid`, `agent-rg`, `agent-literal`: ablation modes with one mode-specific search tool and `wiki_read`
+- `agent-bm25`, `agent-bm25-research`, `agent-dense`, `agent-hybrid`, `agent-rg`, `agent-literal`: ablation modes with one mode-specific search tool and `wiki_read`
 
 Agent modes use `@earendil-works/pi-agent-core` with Pi tools backed by the
 local wiki service. The harness enforces `wiki.limits.maxToolCalls` and
@@ -140,14 +149,23 @@ The single-tool agent modes are intentionally narrower controls:
 literal controls expose `wiki_literal_search`. All agent modes also expose
 `wiki_read` for bounded source hydration.
 
+`agent-bm25-research` is a development mode for retrieval prompt/tool-shape
+iteration. It exposes `wiki_research`, which accepts up to four BM25 query
+variants in one tool call, dedupes the hits, and annotates each hit with the
+queries that matched it. Use it to test whether broader lexical query planning
+helps before promoting a tool shape to the production `agent-wiki` surface.
+
 `wiki.enabled` is the feature flag. If no wiki mode is configured, the benchmark
 uses the current direct no-tools path. If a model uses a wiki `candidateMode`,
 `wiki.enabled` must not be `false`.
 
 `apocbench-wiki.yml` repeats the current nine-model OpenRouter matrix across
 direct, BM25/dense/hybrid RAG, BM25/dense/hybrid single-tool Pi-agent
-conditions, and the production `agent-wiki` condition. Replace its manifest ids
-after building your local index, then run a small smoke:
+conditions, and the production `agent-wiki` condition. It is candidate-only by
+default: the runner stores completed answers and skips the configured placeholder
+judge. Score completed rows with `scripts/codex_rejudge.ts`.
+
+Replace its manifest ids after building your local index, then run a small smoke:
 
 ```bash
 pnpm dev validate -c apocbench-wiki.yml
@@ -157,3 +175,52 @@ pnpm dev run -c apocbench-wiki.yml --limit 2
 ## Reports
 
 Wiki-enabled results persist retrieval traces beside candidate answers. HTML reports show per-question retrieval mode, search/read counts, source titles, and the raw bounded trace so failures can be diagnosed as retrieval misses, source mismatch, or model/tool-use issues.
+
+## Retrieval-debug harness
+
+The canonical local development harness is `data/question_sets/retrieval-debug-10.json`.
+It is not a holdout benchmark. It is a compact, deliberately mixed set of ten
+questions used to test retrieval/tool changes with repeated stochastic samples.
+
+Generate a candidate-only config:
+
+```bash
+pnpm -s retrieval-debug:config -- \
+  --out apocbench-retrieval-debug-10.generated.json \
+  --repeats 10 \
+  --conditions direct,bm25,hybrid,bm25-research
+```
+
+Run it in chunks so progress can be resumed without redoing completed candidate
+answers:
+
+```bash
+RUN_ID=retrieval-debug-10-gemma31b-$(date +%Y%m%d-%H%M%S) \
+CONFIG=apocbench-retrieval-debug-10.generated.json \
+bash scripts/run_retrieval_debug_chunks.sh
+```
+
+The generated config sets `run.candidateOnly=true`, so the runner stores
+candidate answers as `candidate_done` and does not instantiate or call the
+configured judge. Score the completed candidate rows with Codex:
+
+```bash
+pnpm -s rejudge:codex -- \
+  --source-run <candidate-run-id> \
+  --out-run <candidate-run-id>-codex-question-b10 \
+  --codex-bin /home/tristan/.local/bin/codex \
+  --model gpt-5.5 \
+  --reasoning low \
+  --batch-size 10 \
+  --batch-strategy sequential \
+  --source-status both
+```
+
+Then summarize condition-level medians, means, auto-fails, zero rates, and
+paired deltas versus direct:
+
+```bash
+pnpm -s retrieval-debug:report -- \
+  --run <candidate-run-id>-codex-question-b10 \
+  --out logs/<candidate-run-id>-codex-question-b10-report.json
+```

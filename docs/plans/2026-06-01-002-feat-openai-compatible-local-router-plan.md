@@ -1,5 +1,5 @@
 ---
-title: "feat: Add OpenAI-compatible local router"
+title: 'feat: Add OpenAI-compatible local router'
 type: feat
 status: completed
 date: 2026-06-01
@@ -154,7 +154,7 @@ The important design split is that OpenAI-compatible local servers share the AI 
 - **Files:**
   - `README.md`
   - `apocbench.yml`
-  - `apocbench-lfm2.5-deepseek.yml`
+  - `apocbench-lfm2.5-candidate-only.yml`
 - **Approach:** Add a concise README provider section for OpenAI-compatible local servers. Show a no-auth local example and an API-key example. Update sample YAML with a commented router block and commented model entry so existing default runs are unchanged.
 - **Patterns to follow:** The existing README's "Providers / routers" section is concise and user-facing; `apocbench.yml` already uses commented model examples for optional providers.
 - **Test scenarios:**

@@ -28,6 +28,7 @@ import { renderHtmlReport } from '../../reports/html/renderHtml';
 import {
   ensureRunStarted,
   insertRunQuestions,
+  isRunCandidateDone,
   isRunResultDone,
   listRunResults,
   openRunnerDb,
@@ -129,13 +130,13 @@ type RunContext = {
   onEvent?: (e: RunnerEvent) => void;
   budgetState: BudgetState;
   retryPolicy: RetryPolicy;
-  judgeModel: LanguageModel;
+  judgeModel: LanguageModel | null;
   resumeMode: boolean;
   wikiClient?: WikiClient;
 };
 
 type ModelEntry = ApocbenchConfig['models'][number];
-function selectQuestions(params: {
+export function selectQuestions(params: {
   allQuestions: DatasetLine[];
   config: ApocbenchConfig;
   limitOverride?: number | null;
@@ -147,9 +148,10 @@ function selectQuestions(params: {
   const categories = categoriesOverride ?? config.run.categories ?? null;
   const questionIds = questionIdsOverride ?? config.run.questionIds ?? null;
   const questionLimit =
-    limitOverride ?? (questionIdsOverride && questionIdsOverride.length > 0
+    limitOverride ??
+    (questionIdsOverride && questionIdsOverride.length > 0
       ? null
-      : config.run.questionLimit ?? null);
+      : (config.run.questionLimit ?? null));
 
   let questions = allQuestions;
   if (categories && categories.length > 0) {
@@ -254,7 +256,11 @@ async function handleJudgeQuestion(params: {
     lastCandidateUsage,
     lastCandidateCostUsd,
   } = params;
-  const { config, db, runId, onEvent, budgetState, judgeModel, retryPolicy } = ctx;
+  const { config, db, runId, onEvent, budgetState, retryPolicy } = ctx;
+  const judgeModel = ctx.judgeModel;
+  if (!judgeModel) {
+    throw new Error('judge model is unavailable in candidate-only mode');
+  }
   const budgetCheck = () => isBudgetExceeded({ state: budgetState, runId, onEvent });
 
   if (budgetCheck()) {
@@ -455,8 +461,14 @@ async function handleCandidateQuestion(params: {
   const { ctx, modelEntry, candidateModel, question, judgeQueue } = params;
   const { config, db, runId, onEvent, budgetState, resumeMode, retryPolicy } = ctx;
   const budgetCheck = () => isBudgetExceeded({ state: budgetState, runId, onEvent });
+  const candidateOnly = config.run.candidateOnly === true;
 
-  if (resumeMode && isRunResultDone(db, runId, modelEntry.id, question.id)) {
+  if (
+    resumeMode &&
+    (candidateOnly
+      ? isRunCandidateDone(db, runId, modelEntry.id, question.id)
+      : isRunResultDone(db, runId, modelEntry.id, question.id))
+  ) {
     return;
   }
 
@@ -553,6 +565,10 @@ async function handleCandidateQuestion(params: {
       candidateMetricsJson: JSON.stringify(candidateMetrics),
       status: 'candidate_done',
     });
+
+    if (candidateOnly) {
+      return;
+    }
 
     if (budgetCheck()) {
       upsertRunResult(db, {
@@ -776,6 +792,7 @@ function requiredWikiCapabilitiesForMode(mode: CandidateMode): WikiSearchMode[] 
   switch (mode) {
     case 'rag-bm25':
     case 'agent-bm25':
+    case 'agent-bm25-research':
       return ['bm25'];
     case 'rag-dense':
     case 'agent-dense':
@@ -801,7 +818,9 @@ function assertWikiCapabilities(params: {
   for (const model of models) {
     const mode = model.candidateMode ?? 'direct';
     const capabilities = requiredWikiCapabilitiesForMode(mode);
-    const missing = capabilities.filter((capability) => !readiness.capabilities.has(capability));
+    const missing = capabilities.filter(
+      (capability) => !readiness.capabilities.has(capability),
+    );
     if (missing.length === 0) continue;
     if (missing.length === 1) {
       throw new Error(
@@ -967,7 +986,8 @@ export async function runBenchmark(params: {
   });
   insertRunQuestions(db, runId, questions);
 
-  const judgeModel = deps.resolveJudgeModel(config);
+  const candidateOnly = config.run.candidateOnly === true;
+  const judgeModel = candidateOnly ? null : deps.resolveJudgeModel(config);
   const models = resolveModels({ config, selectedModelIds });
   const needsWiki = models.some((model) =>
     isWikiCandidateMode(model.candidateMode ?? 'direct'),
@@ -1019,7 +1039,9 @@ export async function runBenchmark(params: {
     datasetPath: datasetAbsolutePath,
     datasetSha256: datasetSha,
     promptTemplateHash: templateHash,
-    judge: { model: config.judge.model, provider: config.judge.provider },
+    judge: candidateOnly
+      ? { skipped: true, reason: 'candidateOnly' }
+      : { model: config.judge.model, provider: config.judge.provider },
     models: summaries,
   };
 

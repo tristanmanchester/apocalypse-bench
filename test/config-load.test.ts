@@ -23,7 +23,7 @@ candidate:
   maxTokens: 100
 judge:
   router: openrouter
-  model: deepseek/deepseek-v4-flash
+  model: example/judge
   maxTokens: 100
   structured: true
 routers:

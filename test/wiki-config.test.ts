@@ -96,7 +96,7 @@ describe('wiki config schema', () => {
           id: 'm1-agent',
           router: 'ollama',
           model: 'llama3.2',
-          candidateMode: 'agent-wiki',
+          candidateMode: 'agent-bm25-research',
         },
       ],
     });
@@ -106,7 +106,7 @@ describe('wiki config schema', () => {
     expect(result.data.wiki).toEqual(wiki);
     expect(result.data.models.map((model) => model.candidateMode)).toEqual([
       'direct',
-      'agent-wiki',
+      'agent-bm25-research',
     ]);
   });
 

@@ -5,12 +5,12 @@ export function buildJudgePrompt(params: {
   candidateAnswer: string;
 }): string {
   const { question, candidateAnswer } = params;
-  const scenario = question.scenario.map(s => `- ${s}`).join('\n');
+  const scenario = question.scenario.map((s) => `- ${s}`).join('\n');
   const rubric = question.rubric
-    .map(r => `- ${r.id} (max ${r.maxScore}, weight ${r.weight}): ${r.text}`)
+    .map((r) => `- ${r.id} (max ${r.maxScore}, weight ${r.weight}): ${r.text}`)
     .join('\n');
-  const autoFail = question.auto_fail.map(a => `- ${a}`).join('\n');
-  const rubricIds = question.rubric.map(r => r.id).join(', ');
+  const autoFail = question.auto_fail.map((a) => `- ${a}`).join('\n');
+  const rubricIds = question.rubric.map((r) => r.id).join(', ');
 
   return [
     'You are a strict evaluator of rubric compliance and JSON format.',
@@ -21,7 +21,10 @@ export function buildJudgePrompt(params: {
     `Required rubric ids: ${rubricIds}.`,
     'Do NOT omit any id. Do NOT add extra ids. Use numbers only.',
     'Score each rubric item by id with a number within [0, maxScore].',
-    'If auto_fail triggers, set auto_fail=true, overall_score=0, and include a reason.',
+    'Auto-fail is reserved for the explicit Auto-fail conditions listed below.',
+    'Do NOT invent additional auto-fail conditions from rubric omissions, missing nice-to-have details, or ordinary incompleteness.',
+    'If an answer misses an important rubric item but does not satisfy a listed Auto-fail condition, score that rubric item low and keep auto_fail=false.',
+    'If a listed Auto-fail condition triggers, set auto_fail=true, overall_score=0, and include the matching listed condition in the reason.',
     'Keep notes concise and specific.',
     'Score based only on evidence in the candidate answer; do not assume missing steps were done.',
     'Reward clear steps, checks/verification, stop-work triggers, and safe fallbacks when uncertainty exists.',
@@ -32,7 +35,7 @@ export function buildJudgePrompt(params: {
     'JSON template (fill it in; keep all rubric ids present):',
     '{',
     '  "rubric_scores": {',
-    question.rubric.map(r => `    "${r.id}": 0`).join(',\n'),
+    question.rubric.map((r) => `    "${r.id}": 0`).join(',\n'),
     '  },',
     '  "auto_fail": false,',
     '  "auto_fail_reason": "",',
@@ -59,7 +62,7 @@ export function buildJudgePrompt(params: {
       ? [
           '',
           'Reference facts (ground truth to check the answer against; the candidate need not state them verbatim, but contradicting them is a major inaccuracy):',
-          question.reference_facts.map(f => `- ${f}`).join('\n'),
+          question.reference_facts.map((f) => `- ${f}`).join('\n'),
         ]
       : []),
     '',
