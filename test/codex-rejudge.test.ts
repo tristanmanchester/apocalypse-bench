@@ -9,6 +9,7 @@ import type { JudgeOutput } from '../src/core/runner/types';
 import {
   buildBatchPrompt,
   buildJudgeBatches,
+  loadSourceRows,
   normalizeCodexJudgeOutput,
   outputSchemaForBatch,
   parseCodexRejudgeArgs,
@@ -19,6 +20,8 @@ import {
 } from '../src/core/judge/codex';
 import { closeDb } from '../src/storage/sqlite/db';
 import { openAndMigrate } from '../src/storage/sqlite/migrate';
+import { insertQuestions } from '../src/storage/sqlite/questions';
+import { upsertResult } from '../src/storage/sqlite/results';
 import { insertRun } from '../src/storage/sqlite/runs';
 
 function question(id: string, category: string): DatasetLine {
@@ -376,6 +379,64 @@ describe('codex rejudge prompt and schema', () => {
 });
 
 describe('codex rejudge run setup', () => {
+  test('source rows can be filtered by selected question ids', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'apocbench-codex-rows-'));
+    const dbPath = path.join(tempDir, 'apocbench.sqlite');
+
+    closeDb();
+    const db = openAndMigrate(dbPath);
+
+    try {
+      insertRun(db, {
+        run_id: 'source-run',
+        created_at: new Date().toISOString(),
+        tool_version: 'test',
+        config_json: '{}',
+        dataset_path: 'data/question_bank',
+        dataset_sha256: 'source-sha',
+        prompt_template_hash: 'prompt-sha',
+        status: 'done',
+      });
+      insertQuestions(db, 'source-run', [
+        question('Q1', 'Engineering'),
+        question('Q2', 'Engineering'),
+        question('Q3', 'Engineering'),
+      ]);
+
+      for (const questionId of ['Q1', 'Q2', 'Q3']) {
+        for (const modelId of ['direct', 'bm25']) {
+          upsertResult(db, {
+            runId: 'source-run',
+            questionId,
+            modelId,
+            status: 'candidate_done',
+            candidateCompletion: `Answer ${questionId} ${modelId}`,
+          });
+        }
+      }
+
+      const rows = loadSourceRows(db, {
+        ...parseCodexRejudgeArgs([
+          '--source-run',
+          'source-run',
+          '--source-status',
+          'candidate_done',
+        ]),
+        questionIds: ['Q1', 'Q2'],
+      });
+
+      expect(rows.map((row) => `${row.question_id}:${row.model_id}`)).toEqual([
+        'Q1:bm25',
+        'Q1:direct',
+        'Q2:bm25',
+        'Q2:direct',
+      ]);
+    } finally {
+      closeDb();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('resume seeds newly selected questions before later result writes', () => {
     const tempDir = mkdtempSync(path.join(tmpdir(), 'apocbench-codex-'));
     const dbPath = path.join(tempDir, 'apocbench.sqlite');

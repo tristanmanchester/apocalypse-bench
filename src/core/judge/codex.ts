@@ -40,6 +40,7 @@ export type CodexRejudgeArgs = {
   tmpDir: string;
   limit?: number;
   models?: string[];
+  questionIds?: string[];
   sourceStatus: 'done' | 'candidate_done' | 'both';
   resume: boolean;
 };
@@ -259,10 +260,13 @@ function loadQuestions(datasetPath: string): Map<string, DatasetLine> {
   return new Map(questions.map((question) => [question.id, question]));
 }
 
-function loadSourceRows(
+export function loadSourceRows(
   db: Database.Database,
   args: CodexRejudgeArgs,
 ): SourceResultRow[] {
+  if (args.models && args.models.length === 0) return [];
+  if (args.questionIds && args.questionIds.length === 0) return [];
+
   let sql = `
     select question_id, model_id, status, candidate_prompt, candidate_completion,
            candidate_metrics_json, retrieval_trace_json
@@ -281,6 +285,11 @@ function loadSourceRows(
   if (args.models && args.models.length > 0) {
     sql += ` and model_id in (${args.models.map(() => '?').join(',')})`;
     params.push(...args.models);
+  }
+
+  if (args.questionIds && args.questionIds.length > 0) {
+    sql += ` and question_id in (${args.questionIds.map(() => '?').join(',')})`;
+    params.push(...args.questionIds);
   }
 
   sql +=
@@ -334,6 +343,7 @@ export function setupRun(
       },
       filters: {
         models: args.models ?? null,
+        questions: args.questionIds ?? null,
         limit: args.limit ?? null,
         sourceStatus: args.sourceStatus,
       },

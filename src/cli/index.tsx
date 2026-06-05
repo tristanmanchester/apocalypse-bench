@@ -803,6 +803,7 @@ export function codexArgsFromConfig(params: {
   resume?: boolean;
   limit?: number;
   models?: readonly string[];
+  questionIds?: readonly string[];
 }): CodexRejudgeArgs {
   const { config } = params;
   if (!isCodexJudgeConfig(config.judge)) {
@@ -824,6 +825,7 @@ export function codexArgsFromConfig(params: {
     tmpDir: config.judge.tmpDir,
     limit: params.limit,
     models: params.models ? Array.from(params.models) : undefined,
+    questionIds: params.questionIds ? Array.from(params.questionIds) : undefined,
     sourceStatus: config.judge.sourceStatus,
     resume: params.resume ?? false,
   };
@@ -1197,8 +1199,8 @@ async function runAndJudgeCommand(
       sourceRun: runId,
       outRun,
       resume: flags.resume ?? true,
-      limit: flags.limit,
       models: flags.models,
+      questionIds: selectedQuestionIds,
     }),
   );
   const compareOut = flags.compareOut ?? path.join('logs', `${outRun}-comparison.json`);

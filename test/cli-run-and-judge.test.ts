@@ -156,7 +156,7 @@ describe('run-and-judge candidate counting', () => {
     }
   });
 
-  test('Codex rejudge args preserve the run-and-judge limit', () => {
+  test('Codex rejudge args can preserve selected questions without row limiting', () => {
     const config = configWithModels(['direct', 'bm25']);
 
     const args = codexArgsFromConfig({
@@ -164,12 +164,13 @@ describe('run-and-judge candidate counting', () => {
       sourceRun: 'candidate-run',
       outRun: 'judge-run',
       resume: true,
-      limit: 2,
       models: ['bm25'],
+      questionIds: ['Q1', 'Q2'],
     });
 
-    expect(args.limit).toBe(2);
+    expect(args.limit).toBeUndefined();
     expect(args.models).toEqual(['bm25']);
+    expect(args.questionIds).toEqual(['Q1', 'Q2']);
   });
 });
 
