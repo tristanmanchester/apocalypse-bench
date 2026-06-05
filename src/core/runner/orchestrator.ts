@@ -982,6 +982,8 @@ export async function runBenchmark(params: {
   configPath: string;
   datasetPath: string;
   datasetAbsolutePath: string;
+  datasetMetadataPath?: string;
+  datasetSha256?: string;
   questions: DatasetLine[];
   deps: RunnerDeps;
   dryRun: boolean;
@@ -1004,7 +1006,8 @@ export async function runBenchmark(params: {
     questionIdsOverride: params.questionIdsOverride,
   });
 
-  const datasetSha = sha256FileHex(datasetAbsolutePath);
+  const datasetMetadataPath = params.datasetMetadataPath ?? datasetAbsolutePath;
+  const datasetSha = params.datasetSha256 ?? sha256FileHex(datasetAbsolutePath);
   const templateHash = promptTemplateHash(buildCandidatePrompt, buildJudgePrompt);
 
   if (dryRun) return null;
@@ -1020,7 +1023,7 @@ export async function runBenchmark(params: {
     runId,
     toolVersion: deps.toolVersion,
     config,
-    datasetPath: datasetAbsolutePath,
+    datasetPath: datasetMetadataPath,
     datasetSha256: datasetSha,
     promptTemplateHash: templateHash,
   });
@@ -1096,7 +1099,7 @@ export async function runBenchmark(params: {
   const summary = {
     runId,
     createdAt: new Date().toISOString(),
-    datasetPath: datasetAbsolutePath,
+    datasetPath: datasetMetadataPath,
     datasetSha256: datasetSha,
     promptTemplateHash: templateHash,
     judge: judgeSummary,

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -8,6 +8,7 @@ import {
   buildPairedComparisonReport,
   countCompleteCandidateRows,
   codexArgsFromConfig,
+  datasetPathsMetadata,
   expectedCandidateCountForRunAndJudge,
   selectedModelIdsForRunAndJudge,
 } from '../src/cli/index';
@@ -79,6 +80,26 @@ function resultRow(overrides: Partial<ModelResultRow>): ModelResultRow {
 }
 
 describe('run-and-judge candidate counting', () => {
+  test('datasetPaths metadata hashes every expanded input file', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'apocbench-dataset-paths-'));
+
+    try {
+      writeFileSync(path.join(tempDir, 'AGR.jsonl'), '{"id":"AGR-001"}\n');
+      writeFileSync(path.join(tempDir, 'MED.jsonl'), '{"id":"MED-001"}\n');
+
+      const before = datasetPathsMetadata([tempDir]);
+      writeFileSync(path.join(tempDir, 'MED.jsonl'), '{"id":"MED-001","changed":true}\n');
+      const after = datasetPathsMetadata([tempDir]);
+
+      expect(before.datasetMetadataPath).toContain('AGR.jsonl');
+      expect(before.datasetMetadataPath).toContain('MED.jsonl');
+      expect(before.datasetMetadataPath).not.toBe('AGR.jsonl');
+      expect(after.datasetSha256).not.toBe(before.datasetSha256);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('counts every configured model when no model filter is supplied', () => {
     const config = configWithModels(['direct', 'bm25', 'rerank']);
 

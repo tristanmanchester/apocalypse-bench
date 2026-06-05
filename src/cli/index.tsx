@@ -44,6 +44,7 @@ import { openAndMigrate } from '../storage/sqlite/migrate';
 import { listRunModelResults } from '../storage/sqlite/queries';
 import { getRun } from '../storage/sqlite/runs';
 import { App } from '../ui/App';
+import { sha256FileHex, sha256Hex } from '../utils/hash';
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -53,6 +54,24 @@ import { render } from 'ink';
 type CliContext = {
   process: NodeJS.Process;
 };
+
+export function datasetPathsMetadata(datasetPaths: readonly string[]): {
+  datasetMetadataPath: string;
+  datasetSha256: string;
+} {
+  const expandedPaths = expandDatasetPaths(datasetPaths);
+  const files = expandedPaths.map((datasetPath) => {
+    const absolutePath = path.resolve(process.cwd(), datasetPath);
+    return {
+      path: datasetPath.replaceAll(path.sep, '/'),
+      sha256: sha256FileHex(absolutePath),
+    };
+  });
+  return {
+    datasetMetadataPath: expandedPaths.join(','),
+    datasetSha256: sha256Hex(JSON.stringify({ files })),
+  };
+}
 
 function readToolVersion(): string {
   let dir = path.dirname(fileURLToPath(import.meta.url));
@@ -147,6 +166,9 @@ async function runCommand(
   };
 
   const subscribers = new Set<(e: RunnerEvent) => void>();
+  const datasetMetadata = config.run.datasetPaths
+    ? datasetPathsMetadata(config.run.datasetPaths)
+    : null;
 
   const runPromise = runBenchmark({
     config,
@@ -158,6 +180,8 @@ async function runCommand(
       'absolutePath' in dataset
         ? dataset.absolutePath
         : path.resolve(process.cwd(), expandDatasetPaths(config.run.datasetPaths!)[0]!),
+    datasetMetadataPath: datasetMetadata?.datasetMetadataPath,
+    datasetSha256: datasetMetadata?.datasetSha256,
     questions: dataset.lines,
     deps: { resolveModel, resolveJudgeModel, toolVersion: TOOL_VERSION },
     dryRun: flags.dryRun ?? false,
