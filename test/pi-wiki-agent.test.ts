@@ -1,0 +1,970 @@
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import type { ApocbenchConfig } from '../src/core/config/schema';
+
+type MockTool = {
+  name: string;
+  execute: (toolCallId: string, input: Record<string, unknown>) => Promise<unknown>;
+};
+
+type MockAgentOptions = {
+  initialState: {
+    systemPrompt: string;
+    model: { id: string; provider: string; baseUrl?: string; compat?: unknown };
+    tools: MockTool[];
+    messages: unknown[];
+  };
+  getApiKey: (provider: string) => string | undefined;
+  beforeToolCall: (context: unknown) => Promise<unknown>;
+};
+
+type MockAgentState = MockAgentOptions['initialState'] & {
+  isStreaming: boolean;
+  pendingToolCalls: Set<string>;
+};
+
+const agentMock = vi.hoisted(() => ({
+  options: undefined as MockAgentOptions | undefined,
+  responseText: 'Use boiled water and verify disinfection.',
+  responseTexts: [] as string[],
+  onPrompt: undefined as
+    | ((state: MockAgentState, promptIndex: number) => Promise<void>)
+    | undefined,
+  thinkingText: undefined as string | undefined,
+  promptCalls: 0,
+}));
+
+vi.mock('@earendil-works/pi-agent-core', () => ({
+  Agent: class MockAgent {
+    state: MockAgentState;
+
+    constructor(options: MockAgentOptions) {
+      agentMock.options = options;
+      this.state = {
+        ...options.initialState,
+        messages: [],
+        isStreaming: false,
+        pendingToolCalls: new Set(),
+      };
+    }
+
+    subscribe() {
+      return () => undefined;
+    }
+
+    async prompt() {
+      agentMock.promptCalls += 1;
+      await agentMock.onPrompt?.(this.state, agentMock.promptCalls);
+      const content = [];
+      if (agentMock.thinkingText) {
+        content.push({ type: 'thinking', thinking: agentMock.thinkingText });
+      }
+      const responseText =
+        agentMock.responseTexts.shift() ?? agentMock.responseText;
+      content.push({ type: 'text', text: responseText });
+      this.state.messages.push({
+        role: 'assistant',
+        content,
+        api: 'openai-completions',
+        provider: 'openrouter',
+        model: this.state.model.id,
+        responseId: 'gen-1',
+        stopReason: 'stop',
+        usage: {
+          input: 10,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 30,
+          cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0.001,
+          },
+        },
+        timestamp: Date.now(),
+      });
+    }
+
+    async waitForIdle() {
+      return undefined;
+    }
+  },
+}));
+
+const config: ApocbenchConfig = {
+  run: {
+    name: 'wiki-agent-test',
+    datasetPath: './data/question_bank/sample.jsonl',
+    outDir: './runs',
+    resume: false,
+    concurrency: { candidate: 1, judge: 1 },
+  },
+  candidate: { maxTokens: 512 },
+  judge: {
+    router: 'openrouter',
+    model: 'openai/gpt-4o-mini',
+    maxTokens: 512,
+    structured: true,
+  },
+  routers: {
+    openrouter: {
+      apiKeyEnv: 'OPENROUTER_API_KEY',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      default: { maxTokens: 512 },
+    },
+    ollama: {
+      baseUrl: 'http://127.0.0.1:11434/api',
+      default: {},
+    },
+  },
+  wiki: {
+    service: { baseUrl: 'http://127.0.0.1:8765' },
+    corpus: { manifestId: 'corpus' },
+    index: { manifestId: 'index' },
+    limits: {
+      searchTopK: 3,
+      readMaxChars: 500,
+      contextMaxChars: 500,
+      maxToolCalls: 1,
+      maxTurns: 4,
+    },
+  },
+  models: [
+    {
+      id: 'liquid-agent',
+      router: 'openrouter',
+      model: 'liquid/lfm2-8b-a1b',
+      provider: 'liquid',
+      candidateMode: 'agent-bm25',
+    },
+  ],
+};
+
+describe('runPiWikiAgent', () => {
+  beforeEach(() => {
+    agentMock.options = undefined;
+    agentMock.responseText = 'Use boiled water and verify disinfection.';
+    agentMock.responseTexts = [];
+    agentMock.onPrompt = undefined;
+    agentMock.thinkingText = undefined;
+    agentMock.promptCalls = 0;
+    delete process.env.LOCAL_OPENAI_API_KEY;
+  });
+
+  test('creates a Pi OpenRouter agent with bounded wiki tools and trace recording', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-bm25',
+      wikiClient: {
+        search: async ({ query }) => ({
+          mode: 'bm25',
+          query,
+          hits: [
+            {
+              mode: 'bm25',
+              pointer: {
+                articleId: 'a1',
+                chunkId: 'c1',
+                title: 'Water purification',
+              },
+              snippet: 'Boiling water can inactivate pathogens.',
+              score: 12,
+            },
+          ],
+        }),
+        semanticSearch: async () => ({ mode: 'dense', query: '', hits: [] }),
+        hybridSearch: async () => ({ mode: 'hybrid', query: '', hits: [] }),
+        literalSearch: async () => ({ mode: 'literal', query: '', hits: [] }),
+        read: async () => ({
+          pointer: {
+            articleId: 'a1',
+            chunkId: 'c1',
+            title: 'Water purification',
+          },
+          text: 'Boiling water can inactivate many pathogens.',
+          truncated: false,
+        }),
+      },
+    });
+
+    expect(result.completion).toContain('boiled water');
+    expect(result.costUsd).toBe(0.001);
+    expect(agentMock.options?.initialState.model.provider).toBe('openrouter');
+    expect(
+      (
+        agentMock.options?.initialState.model.compat as
+          | { openRouterRouting?: unknown }
+          | undefined
+      )?.openRouterRouting,
+    ).toEqual({
+      order: ['liquid'],
+      allow_fallbacks: false,
+    });
+    expect(agentMock.options?.initialState.tools.map((tool) => tool.name)).toEqual([
+      'wiki_search',
+      'wiki_read',
+    ]);
+
+    const searchTool = agentMock.options?.initialState.tools[0];
+    expect(searchTool).toBeDefined();
+    if (!searchTool) return;
+    await searchTool.execute('search-1', { query: 'water purification', topK: 2 });
+    expect(result.retrievalTrace.searches[0]?.hits[0]?.title).toBe('Water purification');
+
+    const readTool = agentMock.options?.initialState.tools[1];
+    expect(readTool).toBeDefined();
+    if (!readTool) return;
+    await readTool.execute('read-1', { chunkId: 'c1', maxChars: 100 });
+    expect(result.retrievalTrace.reads[0]).toMatchObject({
+      title: 'Water purification',
+      chunkId: 'c1',
+      chars: 44,
+      truncated: false,
+    });
+    expect(result.retrievalTrace.toolCallCount).toBe(2);
+    expect(result.retrievalTrace.toolCalls[0]).toMatchObject({
+      index: 1,
+      toolCallId: 'search-1',
+      toolName: 'wiki_search',
+      arguments: {
+        query: 'water purification',
+        topK: 2,
+      },
+      status: 'ok',
+      result: {
+        search: {
+          mode: 'bm25',
+          query: 'water purification',
+          hitCount: 1,
+        },
+      },
+    });
+    expect(result.retrievalTrace.toolCalls[0]?.result?.contentText).toContain(
+      'Water purification',
+    );
+    expect(result.retrievalTrace.toolCalls[1]).toMatchObject({
+      index: 2,
+      toolCallId: 'read-1',
+      toolName: 'wiki_read',
+      arguments: {
+        chunkId: 'c1',
+        maxChars: 100,
+      },
+      status: 'ok',
+      result: {
+        read: {
+          articleId: 'a1',
+          chunkId: 'c1',
+          title: 'Water purification',
+          chars: 44,
+          truncated: false,
+        },
+      },
+    });
+    expect(result.retrievalTrace.toolCalls[1]?.result?.contentText).toContain(
+      'Boiling water',
+    );
+
+    await expect(agentMock.options?.beforeToolCall({})).resolves.toBeUndefined();
+    await expect(agentMock.options?.beforeToolCall({})).resolves.toEqual({
+      block: true,
+      reason: 'wiki tool budget exceeded: maxToolCalls=1',
+    });
+  });
+
+  test('creates a Pi Ollama agent for local wiki tool runs', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const ollamaModel = {
+      ...config.models[0]!,
+      id: 'local-lfm-agent',
+      router: 'ollama' as const,
+      model: 'lfm2.5-thinking:latest',
+      candidateMode: 'agent-bm25-research' as const,
+    };
+
+    await runPiWikiAgent({
+      config: {
+        ...config,
+        routers: {
+          ...config.routers,
+          ollama: {
+            baseUrl: 'http://127.0.0.1:11434/api',
+            default: { maxTokens: 1024 },
+          },
+        },
+        models: [ollamaModel],
+      },
+      modelEntry: ollamaModel,
+      basePrompt: 'How do I choose pulley sizes?',
+      mode: 'agent-bm25-research',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(agentMock.options?.initialState.model.provider).toBe('ollama');
+    expect(agentMock.options?.initialState.model.id).toBe('lfm2.5-thinking:latest');
+    expect(agentMock.options?.initialState.model.baseUrl).toBe(
+      'http://127.0.0.1:11434/v1',
+    );
+    expect(agentMock.options?.initialState.model.compat).toMatchObject({
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+    });
+  });
+
+  test('passes configured OpenAI-compatible API keys to Pi agent runs', async () => {
+    process.env.LOCAL_OPENAI_API_KEY = 'local-key';
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const modelEntry = {
+      ...config.models[0]!,
+      id: 'local-openai-agent',
+      router: 'openai-compatible' as const,
+      model: 'local/model',
+      candidateMode: 'agent-bm25' as const,
+    };
+
+    await runPiWikiAgent({
+      config: {
+        ...config,
+        routers: {
+          ...config.routers,
+          openaiCompatible: {
+            baseUrl: 'http://127.0.0.1:8000/v1',
+            apiKeyEnv: 'LOCAL_OPENAI_API_KEY',
+            default: { maxTokens: 1024 },
+          },
+        },
+        models: [modelEntry],
+      },
+      modelEntry,
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(agentMock.options?.initialState.model.provider).toBe('openai-compatible');
+    expect(agentMock.options?.getApiKey('openai-compatible')).toBe('local-key');
+    expect(agentMock.options?.getApiKey('openrouter')).toBeUndefined();
+  });
+
+  test('strips native channel wrappers from final answer text', async () => {
+    agentMock.responseText =
+      '<|channel>thought\n<channel|>Use dry gypsum as a desiccant and measure the timed discharge rate.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I build a meter?',
+      mode: 'agent-bm25',
+      wikiClient: {
+        search: async ({ query }) => ({ mode: 'bm25', query, hits: [] }),
+        semanticSearch: async () => ({ mode: 'dense', query: '', hits: [] }),
+        hybridSearch: async () => ({ mode: 'hybrid', query: '', hits: [] }),
+        literalSearch: async () => ({ mode: 'literal', query: '', hits: [] }),
+        read: async () => ({
+          pointer: { articleId: 'a1', chunkId: 'c1', title: 'Kearny fallout meter' },
+          text: 'A dry chamber is required.',
+          truncated: false,
+        }),
+      },
+    });
+
+    expect(result.completion).toBe(
+      'Use dry gypsum as a desiccant and measure the timed discharge rate.',
+    );
+  });
+
+  test('does not repair long actionable answers just because they include planning preamble', async () => {
+    agentMock.responseText = [
+      'We need to produce the final answer now. The practical procedure is as follows.',
+      'Use clean containers, keep raw and treated materials separated, mark the working area, and assign one person to read back the steps before anyone starts.',
+      'First prepare the materials and check that the measuring device is dry, clean, and intact.',
+      'Then demonstrate the process slowly, have each trainee repeat it, and correct mistakes immediately.',
+      'Use fixed visual marks rather than memory.',
+      'Record the target value on the container, test the result before use, and stop if the test is outside the marked range.',
+      'Before release, run a final check: confirm the container label, confirm the tool used for raw material never touches treated material, confirm the timing step was completed, and confirm the measured result is in range.',
+      'If any check fails, discard or reprocess the batch rather than guessing.',
+    ].join(' ');
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: { ...config.models[0]!, candidateMode: 'agent-dense' },
+      basePrompt: 'How do I run a practical safety training?',
+      mode: 'agent-dense',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(agentMock.promptCalls).toBe(1);
+    expect(result.completion).toContain('The practical procedure is as follows');
+  });
+
+  test('exposes only the mode-specific search tool plus read', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const cases = [
+      ['agent-bm25', 'wiki_search'],
+      ['agent-bm25-research', 'wiki_research'],
+      ['agent-bm25-research-smart-read', 'wiki_smart_research'],
+      ['agent-hybrid-research-smart-read', 'wiki_smart_research'],
+      ['agent-dense', 'wiki_semantic_search'],
+      ['agent-hybrid', 'wiki_hybrid_search'],
+      ['agent-literal', 'wiki_literal_search'],
+      ['agent-rg', 'wiki_literal_search'],
+    ] as const;
+
+    for (const [candidateMode, searchToolName] of cases) {
+      agentMock.options = undefined;
+      await runPiWikiAgent({
+        config: {
+          ...config,
+          models: [
+            {
+              ...config.models[0]!,
+              candidateMode,
+            },
+          ],
+        },
+        modelEntry: {
+          ...config.models[0]!,
+          candidateMode,
+        },
+        basePrompt: 'How do I make river water safer?',
+        mode: candidateMode,
+        wikiClient: wikiClientStub(),
+      });
+
+      const options = agentMock.options as MockAgentOptions | undefined;
+      expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+        searchToolName,
+        'wiki_read',
+      ]);
+    }
+  });
+
+  test('gives agent-bm25 only BM25/read guidance without dense or hybrid tools', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    const prompt = agentMock.options?.initialState.systemPrompt ?? '';
+    expect(prompt).toContain('You must use the local offline Wikipedia BM25 tools');
+    expect(prompt).toContain('Use wiki_search at least once before answering');
+    expect(prompt).toContain('Use wiki_read for a relevant chunk');
+    expect(prompt).not.toContain('wiki_hybrid_search');
+    expect(prompt).not.toContain('wiki_semantic_search');
+    expect(
+      agentMock.options?.initialState.tools.map((tool: MockTool) => tool.name),
+    ).toEqual(['wiki_search', 'wiki_read']);
+  });
+
+  test('agent-bm25-research exposes merged BM25 research plus read workflow', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const calls = {
+      search: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'bm25' as const,
+        query,
+        hits: [
+          {
+            mode: 'bm25' as const,
+            pointer: {
+              articleId: query.includes('ratio') ? 'pulley' : 'belt',
+              chunkId: query.includes('ratio') ? 'pulley:speed' : 'belt:drive',
+              title: query.includes('ratio') ? 'Pulley' : 'Belt drive',
+              headingPath: ['Speed ratio'],
+            },
+            score: query.includes('ratio') ? 20 : 15,
+            bm25Score: query.includes('ratio') ? 20 : 15,
+            snippet: 'Pulley rotational speed depends on pulley diameter ratio.',
+            sources: ['bm25'],
+          },
+        ],
+      })),
+      semanticSearch: vi.fn(),
+      hybridSearch: vi.fn(),
+      literalSearch: vi.fn(),
+      read: vi.fn(async () => ({
+        pointer: {
+          articleId: 'pulley',
+          chunkId: 'pulley:speed',
+          title: 'Pulley',
+        },
+        text: 'Pulley speed ratio is inverse to pulley diameter.',
+        truncated: false,
+      })),
+    };
+
+    const result = await runPiWikiAgent({
+      config: {
+        ...config,
+        models: [
+          {
+            ...config.models[0]!,
+            candidateMode: 'agent-bm25-research',
+          },
+        ],
+      },
+      modelEntry: {
+        ...config.models[0]!,
+        candidateMode: 'agent-bm25-research',
+      },
+      basePrompt: 'How do I choose pulley sizes?',
+      mode: 'agent-bm25-research',
+      wikiClient: calls,
+    });
+
+    const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain('Use wiki_research first');
+    expect(options?.initialState.systemPrompt).toContain(
+      'read at least one relevant chunk',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'ignore it and answer conservatively',
+    );
+    expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+      'wiki_research',
+      'wiki_read',
+    ]);
+
+    const researchResult = await options?.initialState.tools[0]?.execute('research-1', {
+      query: 'pulley speed',
+      query2: 'pulley ratio diameter speed',
+      topK: 2,
+    });
+
+    expect(calls.search).toHaveBeenCalledTimes(2);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.toolName)).toContain(
+      'wiki_research',
+    );
+    expect(JSON.stringify(researchResult)).toContain('pulley ratio diameter speed');
+    expect(JSON.stringify(researchResult)).toContain('firstRank');
+  });
+
+  test('smart research modes automatically read ranked chunks', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const calls = {
+      search: vi.fn(),
+      semanticSearch: vi.fn(),
+      hybridSearch: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'hybrid' as const,
+        query,
+        hits: [
+          {
+            mode: 'hybrid' as const,
+            pointer: {
+              articleId: query.includes('ratio') ? 'pulley' : 'belt',
+              chunkId: query.includes('ratio') ? 'pulley:speed' : 'belt:drive',
+              title: query.includes('ratio') ? 'Pulley' : 'Belt drive',
+              headingPath: ['Speed ratio'],
+            },
+            score: query.includes('ratio') ? 20 : 15,
+            bm25Score: query.includes('ratio') ? 18 : 12,
+            denseScore: query.includes('ratio') ? 0.9 : 0.8,
+            snippet: 'Pulley rotational speed depends on pulley diameter ratio.',
+            sources: ['bm25', 'dense'],
+          },
+        ],
+      })),
+      literalSearch: vi.fn(),
+      read: vi.fn(async ({ chunkId }: { chunkId?: string }) => ({
+        pointer: {
+          articleId: chunkId?.startsWith('pulley') ? 'pulley' : 'belt',
+          chunkId,
+          title: chunkId?.startsWith('pulley') ? 'Pulley' : 'Belt drive',
+        },
+        text: chunkId?.startsWith('pulley')
+          ? 'Pulley speed ratio is inverse to pulley diameter.'
+          : 'A belt drive transfers rotation between shafts.',
+        truncated: false,
+      })),
+    };
+
+    const result = await runPiWikiAgent({
+      config: {
+        ...config,
+        wiki: {
+          ...config.wiki!,
+          limits: {
+            ...config.wiki!.limits,
+            readMaxChars: 200,
+            contextMaxChars: 1000,
+            maxToolCalls: 4,
+          },
+        },
+        models: [
+          {
+            ...config.models[0]!,
+            candidateMode: 'agent-hybrid-research-smart-read',
+          },
+        ],
+      },
+      modelEntry: {
+        ...config.models[0]!,
+        candidateMode: 'agent-hybrid-research-smart-read',
+      },
+      basePrompt: 'How do I choose pulley sizes?',
+      mode: 'agent-hybrid-research-smart-read',
+      wikiClient: calls,
+    });
+
+    const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain('wiki_smart_research first');
+    expect(options?.initialState.systemPrompt).toContain('reads the best chunks for you');
+    expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+      'wiki_smart_research',
+      'wiki_read',
+    ]);
+
+    const smartResult = await options?.initialState.tools[0]?.execute('smart-1', {
+      query: 'pulley speed',
+      query2: 'pulley ratio diameter speed',
+      topK: 2,
+      readCount: 2,
+    });
+
+    expect(calls.hybridSearch).toHaveBeenCalledTimes(2);
+    expect(calls.search).not.toHaveBeenCalled();
+    expect(calls.read).toHaveBeenCalledTimes(2);
+    expect(result.retrievalTrace.searches.map((search) => search.mode)).toEqual([
+      'hybrid',
+      'hybrid',
+    ]);
+    expect(result.retrievalTrace.reads).toHaveLength(2);
+    expect(result.retrievalTrace.contextChars).toBeGreaterThan(0);
+    expect(result.retrievalTrace.toolCalls[0]).toMatchObject({
+      toolName: 'wiki_smart_research',
+      status: 'ok',
+      result: {
+        search: {
+          mode: 'hybrid-smart-read',
+          hitCount: 2,
+        },
+      },
+    });
+    expect(JSON.stringify(smartResult)).toContain('reads');
+    expect(JSON.stringify(smartResult)).toContain('Pulley speed ratio');
+  });
+
+  test('agent-bm25-research-read-required repairs final answers until a chunk is read', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const calls = {
+      search: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'bm25' as const,
+        query,
+        hits: [
+          {
+            mode: 'bm25' as const,
+            pointer: {
+              articleId: 'iodine',
+              chunkId: 'iodine:disinfection',
+              title: 'Iodine',
+              headingPath: ['Disinfection'],
+            },
+            score: 22,
+            bm25Score: 22,
+            snippet: 'Iodine can be used for water disinfection.',
+            sources: ['bm25'],
+          },
+        ],
+      })),
+      semanticSearch: vi.fn(),
+      hybridSearch: vi.fn(),
+      literalSearch: vi.fn(),
+      read: vi.fn(async () => ({
+        pointer: {
+          articleId: 'iodine',
+          chunkId: 'iodine:disinfection',
+          title: 'Iodine',
+        },
+        text: 'Iodine disinfects water but is not suitable for everyone.',
+        truncated: false,
+      })),
+    };
+    agentMock.responseTexts = [
+      'Use iodine carefully and verify contact time.',
+      'Use iodine carefully, allow contact time, and avoid it for people with iodine sensitivity.',
+    ];
+    agentMock.onPrompt = async (state, promptIndex) => {
+      if (promptIndex === 1) {
+        await state.tools[0]?.execute('research-1', {
+          query: 'iodine water disinfection',
+          topK: 1,
+        });
+      }
+      if (promptIndex === 2) {
+        await state.tools[1]?.execute('read-1', {
+          chunkId: 'iodine:disinfection',
+          maxChars: 200,
+        });
+      }
+    };
+
+    const result = await runPiWikiAgent({
+      config: {
+        ...config,
+        wiki: {
+          ...config.wiki!,
+          limits: {
+            ...config.wiki!.limits,
+            maxToolCalls: 4,
+            maxTurns: 10,
+          },
+        },
+        models: [
+          {
+            ...config.models[0]!,
+            candidateMode: 'agent-bm25-research-read-required',
+          },
+        ],
+      },
+      modelEntry: {
+        ...config.models[0]!,
+        candidateMode: 'agent-bm25-research-read-required',
+      },
+      basePrompt: 'How do I disinfect water with iodine?',
+      mode: 'agent-bm25-research-read-required',
+      wikiClient: calls,
+    });
+
+    const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain(
+      'read at least one returned chunk before answering',
+    );
+    expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+      'wiki_research',
+      'wiki_read',
+    ]);
+    expect(result.retrievalTrace.repairReasons).toContain(
+      'retrieval_required_reads_missing:0',
+    );
+    expect(result.retrievalTrace.reads).toHaveLength(1);
+    expect(result.completion).toContain('iodine sensitivity');
+  });
+
+  test('exposes all production wiki tools for agent-wiki', async () => {
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const calls = {
+      search: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'bm25' as const,
+        query,
+        hits: [],
+      })),
+      semanticSearch: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'dense' as const,
+        query,
+        hits: [],
+      })),
+      hybridSearch: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'hybrid' as const,
+        query,
+        hits: [],
+      })),
+      literalSearch: vi.fn(async ({ query }: { query: string }) => ({
+        mode: 'literal' as const,
+        query,
+        hits: [],
+      })),
+      read: vi.fn(async () => ({
+        pointer: {
+          articleId: 'a1',
+          chunkId: 'c1',
+          title: 'Water purification',
+        },
+        text: 'Boiling water can inactivate many pathogens.',
+        truncated: false,
+      })),
+    };
+
+    const result = await runPiWikiAgent({
+      config: {
+        ...config,
+        models: [
+          {
+            ...config.models[0]!,
+            candidateMode: 'agent-wiki',
+          },
+        ],
+      },
+      modelEntry: {
+        ...config.models[0]!,
+        candidateMode: 'agent-wiki',
+      },
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-wiki',
+      wikiClient: calls,
+    });
+
+    const options = agentMock.options as MockAgentOptions | undefined;
+    expect(options?.initialState.systemPrompt).toContain(
+      'You must use the local offline Wikipedia tools before answering.',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Use at least one Wikipedia search before answering',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Build search queries from distinctive nouns in the user prompt',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'Read a chunk with wiki_read when search snippets are insufficient',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'with concrete checks or verification steps when relevant',
+    );
+    expect(options?.initialState.systemPrompt).toContain(
+      'You may use final_answer for deterministic submission',
+    );
+    expect(options?.initialState.tools.map((tool: MockTool) => tool.name)).toEqual([
+      'wiki_hybrid_search',
+      'wiki_search',
+      'wiki_semantic_search',
+      'wiki_literal_search',
+      'wiki_read',
+    ]);
+
+    await options?.initialState.tools[0]?.execute('hybrid-1', {
+      query: 'water treatment',
+      topK: 2,
+    });
+    await options?.initialState.tools[1]?.execute('bm25-1', {
+      query: 'boiling water',
+      topK: 2,
+    });
+    await options?.initialState.tools[2]?.execute('dense-1', {
+      query: 'making contaminated water potable',
+      topK: 2,
+    });
+    await options?.initialState.tools[3]?.execute('literal-1', {
+      query: 'inactivate pathogens',
+      chunkId: 'c1',
+    });
+
+    expect(calls.hybridSearch).toHaveBeenCalledWith({
+      query: 'water treatment',
+      topK: 2,
+      articleId: undefined,
+      chunkId: undefined,
+    });
+    expect(calls.search).toHaveBeenCalledWith({
+      query: 'boiling water',
+      topK: 2,
+      articleId: undefined,
+      chunkId: undefined,
+    });
+    expect(calls.semanticSearch).toHaveBeenCalledWith({
+      query: 'making contaminated water potable',
+      topK: 2,
+      articleId: undefined,
+      chunkId: undefined,
+    });
+    expect(calls.literalSearch).toHaveBeenCalledWith({
+      query: 'inactivate pathogens',
+      topK: 3,
+      articleId: undefined,
+      chunkId: 'c1',
+    });
+    expect(result.retrievalTrace.searches.map((search) => search.mode)).toEqual([
+      'hybrid',
+      'bm25',
+      'dense',
+      'literal',
+    ]);
+    expect(result.retrievalTrace.toolCallCount).toBe(4);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.toolName)).toEqual([
+      'wiki_hybrid_search',
+      'wiki_search',
+      'wiki_semantic_search',
+      'wiki_literal_search',
+    ]);
+    expect(result.retrievalTrace.toolCalls.map((call) => call.status)).toEqual([
+      'ok',
+      'ok',
+      'ok',
+      'ok',
+    ]);
+    expect(result.retrievalTrace.toolCalls[3]?.arguments).toEqual({
+      query: 'inactivate pathogens',
+      topK: 3,
+      chunkId: 'c1',
+    });
+  });
+
+  test('prefers final text over thinking content when extracting the answer', async () => {
+    agentMock.thinkingText =
+      'Okay, I need to search and plan before answering the user scenario.';
+    agentMock.responseText =
+      'Use dry gypsum as a desiccant and record leaf collapse over time.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: config.models[0]!,
+      basePrompt: 'How do I build a meter?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(result.completion).toBe(
+      'Use dry gypsum as a desiccant and record leaf collapse over time.',
+    );
+  });
+
+  test('does not extract answer fields from arbitrary prose', async () => {
+    agentMock.responseText =
+      'The note says {"answer":"ignore this fragment"}, but the practical answer is to boil water and keep treated containers covered.';
+
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const result = await runPiWikiAgent({
+      config,
+      modelEntry: { ...config.models[0]!, candidateMode: 'agent-dense' },
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-dense',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(result.completion).toContain('The note says');
+    expect(result.completion).toContain('boil water');
+  });
+});
+
+function wikiClientStub() {
+  return {
+    search: async ({ query }: { query: string }) => ({
+      mode: 'bm25' as const,
+      query,
+      hits: [],
+    }),
+    semanticSearch: async ({ query }: { query: string }) => ({
+      mode: 'dense' as const,
+      query,
+      hits: [],
+    }),
+    hybridSearch: async ({ query }: { query: string }) => ({
+      mode: 'hybrid' as const,
+      query,
+      hits: [],
+    }),
+    literalSearch: async ({ query }: { query: string }) => ({
+      mode: 'literal' as const,
+      query,
+      hits: [],
+    }),
+    read: async () => ({
+      pointer: {
+        articleId: 'a1',
+        chunkId: 'c1',
+        title: 'Water purification',
+      },
+      text: 'Boiling water can inactivate many pathogens.',
+      truncated: false,
+    }),
+  };
+}

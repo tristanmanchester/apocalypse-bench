@@ -1,78 +1,124 @@
-# Apocalypse-bench
+# Apocalypse Bench
 
-You’ve got a laptop, a pile of scrap, and exactly zero internet. The question isn’t “can an LLM write code?”—it’s “can it help you do real work without getting anyone hurt?”
+`apocalypse-bench` is a local benchmark runner for testing whether language
+models can give useful, safe advice when the internet is gone and the task is
+practical.
 
-`apocalypse-bench` (CLI: `apocbench`) is a TypeScript benchmark runner that:
+The default benchmark is a no-tools, no-browsing baseline. A candidate model
+receives one survival question and writes an answer from its own knowledge. The
+runner then scores that answer against a structured 10-point rubric with a
+separate judge model.
 
-- Runs a fixed survival/offline-assistant question bank against one or more **candidate models**
-- Uses a separate **judge model** to score each answer against a structured rubric (including “auto-fail” conditions)
-- Writes local, reproducible artifacts and reports under `runs/<runId>/`
+The repository also includes an optional offline Wikipedia retrieval track. It
+keeps the direct baseline intact, then adds separate wiki-enabled conditions for
+local BM25, dense, hybrid, RAG, and bounded agent-style retrieval. See
+[docs/wiki-retrieval.md](docs/wiki-retrieval.md) for setup.
 
-No browsing, no tools, no retrieval—just the model, the prompt, and the consequences.
+## What is included
 
-You can read my full writeup [here](https://www.crowlabs.tech/blog/apocalypse-bench).
+- `apocbench`, a TypeScript CLI for running candidate models, scoring answers,
+  and comparing conditions.
+- A 500-question JSONL question bank under `data/question_bank/`.
+- SQLite-backed run storage under `runs/apocbench.sqlite`.
+- Local HTML and Markdown report generation for completed runs.
+- Optional local Wikipedia indexing through the Rust `wiki-search` service.
+- Optional asynchronous Codex judging for candidate-only runs.
+- A separate dashboard app under `dashboard/` for exploring run outputs.
 
-## What’s in this repo
+The full writeup is here:
+[Apocalypse Bench](https://www.crowlabs.tech/blog/apocalypse-bench).
 
-- **Runner CLI**: orchestrates dataset loading, candidate generation, judge scoring, and artifact writing.
-- **Dataset**: a JSON (JSONL) question bank in `data/question_bank/` is the single source of truth, loaded directly at runtime.
-- **Reports**: generates local HTML and Markdown exports for a run.
-- **Dashboard**: a Next.js app in `dashboard/` for exploring runs.
+## Requirements
 
-## Quick start
+- Node.js 20 or newer
+- pnpm 10 or newer
+- An OpenRouter API key for hosted models, unless you only use local routers
+- Ollama, LM Studio, vLLM, or another OpenAI-compatible server for local models
+- Codex CLI if you use the asynchronous Codex judge workflow
 
-### Prereqs
-
-- Node.js `>= 20`
-- `pnpm`
-
-### Install
+Install dependencies:
 
 ```bash
 pnpm install
+cp .env.example .env
 ```
 
-### Run the CLI (dev)
+Add `OPENROUTER_API_KEY` to `.env` if you use OpenRouter.
+
+## Run a small smoke test
+
+Validate the default config:
 
 ```bash
-pnpm dev run -c apocbench.yml
+pnpm -s dev validate -c apocbench.yml
 ```
 
-### Build the CLI
+Run a tiny direct benchmark:
+
+```bash
+pnpm -s dev run -c apocbench.yml smoke-run --limit 2
+```
+
+Build the CLI:
 
 ```bash
 pnpm build
 ```
 
-After building, the `apocbench` binary points at `dist/cli/index.js`.
+After building, the package exposes the `apocbench` binary from
+`dist/cli/index.js`.
 
-## Configure a run
+## Run candidates first, judge later
 
-The default config is `apocbench.yml`. It defines:
+The current research configs usually run candidate generation first and judge
+afterward. This makes long model runs easier to resume and keeps expensive
+judge calls separate from candidate failures.
 
-- Where to read the compiled dataset JSONL
-- Which candidate models to run (local via Ollama and/or hosted via OpenRouter)
-- Which judge model to use
-- Concurrency, budget limits, and output options
+The direct-vs-BM25 research config runs all 500 questions across nine model
+families and two conditions, for 9,000 candidate answers:
 
-Key fields (high level):
+```bash
+pnpm -s dev validate -c apocbench-direct-vs-bm25-research.yml --quiet
+pnpm -s dev run-and-judge -c apocbench-direct-vs-bm25-research.yml \
+  direct-vs-bm25-research-001 --resume
+```
 
-- `run.datasetPaths`: JSONL directories (compiled runtime dataset)
-- `run.outDir`: where run artifacts go (default `./runs`)
-- `candidate`: default generation params
-- `judge`: judge routing/model and structured output settings
-- `routers`: router endpoints (e.g. Ollama base URL, OpenRouter base URL)
-- `models`: the candidate model list
+To split the same workflow into explicit stages:
 
-### Providers / routers
+```bash
+pnpm -s dev run -c apocbench-direct-vs-bm25-research.yml \
+  direct-vs-bm25-research-001
 
-- **Ollama (local):** set the `routers.ollama.baseUrl` (default is `http://localhost:11434/api`).
-- **OpenAI-compatible local servers:** set `routers.openaiCompatible.baseUrl` to the server's `/v1`
-  endpoint and use `router: 'openai-compatible'` on the model. Leave `apiKeyEnv: null` for no-auth
-  local servers, or set it to an env var name for authenticated proxies.
-- **OpenRouter (hosted):** set `OPENROUTER_API_KEY` in your environment (see `apocbench.yml`).
+pnpm -s dev judge -c apocbench-direct-vs-bm25-research.yml \
+  --source-run direct-vs-bm25-research-001 \
+  --out-run direct-vs-bm25-research-001-codex-question-paired-b10 \
+  --resume
 
-Example local OpenAI-compatible candidate:
+pnpm -s dev compare \
+  --run direct-vs-bm25-research-001-codex-question-paired-b10 \
+  --baseline-suffix direct \
+  --comparison-suffix agent-bm25-research \
+  --out logs/direct-vs-bm25-research-001-comparison.json
+```
+
+Use `--limit` for smoke tests before launching a full run.
+
+## Configure models
+
+Configs are YAML files. `apocbench.yml` is the smallest starting point. It
+defines the dataset, output directory, routers, model list, concurrency, and
+judge behavior.
+
+OpenRouter models need `OPENROUTER_API_KEY`:
+
+```yaml
+routers:
+  openrouter:
+    baseUrl: 'https://openrouter.ai/api/v1'
+    apiKeyEnv: 'OPENROUTER_API_KEY'
+```
+
+Local OpenAI-compatible servers can run without an API key:
 
 ```yaml
 routers:
@@ -90,50 +136,61 @@ models:
     model: 'local-model'
 ```
 
-For an authenticated OpenAI-compatible server, set `apiKeyEnv` to an environment variable name:
+Ollama uses `http://localhost:11434/api` by default.
 
-```yaml
-routers:
-  openaiCompatible:
-    baseUrl: 'https://your-proxy.example.com/v1'
-    apiKeyEnv: 'LOCAL_OPENAI_API_KEY'
-    default:
-      temperature: 0.5
-      maxTokens: 4000
-      timeoutMs: 120000
-```
+## Dataset
 
-## Dataset (V2)
+The question bank is JSONL and is the source of truth. Each category has one
+file under `data/question_bank/`, and each line is one question object.
 
-The question bank is **JSON, and JSON is the single source of truth**: 13 per-category JSONL files
-under `data/question_bank/` (`AGR.jsonl`, `CHEM.jsonl`, …), one question object per line. `apocbench`
-loads them directly — there is no compile step. See `data/question_bank/info.md` for the schema and
-the V2 authoring rules (specific binary rubrics; auto-fails that measure refusal and dangerous error,
-never the topic).
-
-Edit the JSONL directly, then:
+Useful commands:
 
 ```bash
-pnpm -s test -- test/dataset-validate.test.ts   # enforce the V2 contract
-pnpm -s dataset:export                          # refresh the read-only docs/question-bank.md
+pnpm -s test -- test/dataset-validate.test.ts
+pnpm -s dataset:export
 ```
 
-`docs/question-bank.md` is a generated, human-readable copy for browsing (kept in sync by
-`test/dataset-export-fresh.test.ts`); do not edit it by hand.
+`docs/question-bank.md` is generated from the JSONL files for browsing. Do not
+edit it by hand. See `data/question_bank/info.md` for the schema and authoring
+rules.
 
 ## Outputs
 
-Runs write to `runs/<runId>/`. Expect a mix of:
+Runs write local artifacts under `runs/`:
 
-- Per-question artifacts (candidate answer + judge output)
-- Aggregated summaries (JSON)
-- Local reports (HTML) and Markdown exports
+- `runs/apocbench.sqlite`, the shared SQLite database
+- per-question candidate answers and judge outputs
+- aggregate summaries
+- local HTML and Markdown reports
 
-You can also export Markdown for an existing run ID (see `apocbench --help`).
+`runs/`, `logs/`, local wiki indexes, and generated experiment configs are
+ignored by Git.
 
-## Dashboard
+## Wikipedia retrieval
 
-There’s a separate Next.js app in `dashboard/`.
+The optional retrieval track uses local Wikipedia data and never gives the model
+live web access. The main pieces are:
+
+- a Markdown Wikipedia corpus stored under `data/wiki/`
+- a Rust BM25 service in `crates/wiki-search`
+- optional dense embeddings and hybrid search
+- agent modes that expose bounded wiki search and read tools
+
+Start with [docs/wiki-retrieval.md](docs/wiki-retrieval.md). Use
+`apocbench-wiki.yml` for a smoke config and
+`apocbench-direct-vs-bm25-research.yml` for the direct-vs-BM25 research matrix.
+
+## Development
+
+Common checks:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+The dashboard is a separate app:
 
 ```bash
 cd dashboard
@@ -141,12 +198,6 @@ pnpm install
 pnpm dev
 ```
 
-## Development
+## License
 
-Useful commands:
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-```
+MIT. See [LICENSE](LICENSE).

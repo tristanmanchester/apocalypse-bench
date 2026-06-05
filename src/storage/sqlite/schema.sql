@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS model_results (
   candidate_prompt TEXT,
   candidate_completion TEXT,
   candidate_metrics_json TEXT,
+  retrieval_trace_json TEXT,
   judge_request_json TEXT,
   judge_response_json TEXT,
   judge_parsed_json TEXT,

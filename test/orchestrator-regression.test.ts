@@ -5,7 +5,11 @@ import path from 'node:path';
 import type { ApocbenchConfig } from '../src/core/config/schema';
 import type { DatasetLine } from '../src/core/dataset/schema';
 import type { JudgeOutput } from '../src/core/runner/types';
-import { runBenchmark } from '../src/core/runner/orchestrator';
+import {
+  createQueues,
+  runBenchmark,
+  selectQuestions,
+} from '../src/core/runner/orchestrator';
 import { generateText, type LanguageModel } from 'ai';
 import { judgeWithRubricCompletenessRetry } from '../src/core/runner/judge';
 
@@ -34,6 +38,7 @@ vi.mock('../src/core/runner/persistence', () => {
     questionId: string;
     status: string;
     candidateMetricsJson?: string | null;
+    retrievalTraceJson?: string | null;
     candidatePrompt?: string | null;
     candidateCompletion?: string | null;
     judgeParsedJson?: string | null;
@@ -63,6 +68,7 @@ vi.mock('../src/core/runner/persistence', () => {
           score_overall: number | null;
           auto_fail: number | null;
           candidate_metrics_json: string | null;
+          retrieval_trace_json: string | null;
           category: string | null;
           difficulty: string | null;
         }> = [];
@@ -77,6 +83,7 @@ vi.mock('../src/core/runner/persistence', () => {
             score_overall: typeof row.scoreOverall === 'number' ? row.scoreOverall : null,
             auto_fail: row.autoFail ? 1 : 0,
             candidate_metrics_json: row.candidateMetricsJson ?? null,
+            retrieval_trace_json: row.retrievalTraceJson ?? null,
             category: q?.category ?? null,
             difficulty: q?.difficulty ?? null,
           });
@@ -94,9 +101,27 @@ vi.mock('../src/core/runner/persistence', () => {
         questions.set(`${runId}:${q.id}`, q);
       }
     },
-    isRunResultDone: (_db: unknown, runId: string, modelId: string, questionId: string) => {
+    isRunResultDone: (
+      _db: unknown,
+      runId: string,
+      modelId: string,
+      questionId: string,
+    ) => {
       const row = results.get(keyFor(runId, modelId, questionId));
       return row?.status === 'done' && Boolean(row.judgeParsedJson);
+    },
+    isRunCandidateDone: (
+      _db: unknown,
+      runId: string,
+      modelId: string,
+      questionId: string,
+    ) => {
+      const row = results.get(keyFor(runId, modelId, questionId));
+      return (
+        (row?.status === 'candidate_done' || row?.status === 'done') &&
+        typeof row.candidateCompletion === 'string' &&
+        row.candidateCompletion.trim().length > 0
+      );
     },
     upsertRunResult: (_db: unknown, params: ResultRow) => {
       const key = keyFor(params.runId, params.modelId, params.questionId);
@@ -112,6 +137,7 @@ vi.mock('../src/core/runner/persistence', () => {
         }
       };
       preserve('candidateMetricsJson');
+      preserve('retrievalTraceJson');
       preserve('candidatePrompt');
       preserve('candidateCompletion');
       preserve('judgeParsedJson');
@@ -135,6 +161,7 @@ vi.mock('../src/core/runner/persistence', () => {
         auto_fail_reason: string | null;
         status: string;
         candidate_metrics_json: string | null;
+        retrieval_trace_json: string | null;
         candidate_prompt: string | null;
         candidate_completion: string | null;
         judge_parsed_json: string | null;
@@ -156,6 +183,7 @@ vi.mock('../src/core/runner/persistence', () => {
           auto_fail_reason: row.autoFailReason ?? null,
           status: row.status,
           candidate_metrics_json: row.candidateMetricsJson ?? null,
+          retrieval_trace_json: row.retrievalTraceJson ?? null,
           candidate_prompt: row.candidatePrompt ?? null,
           candidate_completion: row.candidateCompletion ?? null,
           judge_parsed_json: row.judgeParsedJson ?? null,
@@ -175,10 +203,7 @@ vi.mock('../src/core/runner/persistence', () => {
 const generateTextMock = vi.mocked(generateText);
 const judgeMock = vi.mocked(judgeWithRubricCompletenessRetry);
 
-const DATASET_ABS = path.resolve(
-  process.cwd(),
-  'data/question_bank/PH.jsonl',
-);
+const DATASET_ABS = path.resolve(process.cwd(), 'data/question_bank/PH.jsonl');
 
 const RUNS_ROOT = path.resolve(process.cwd(), 'runs-test-orchestrator');
 
@@ -268,6 +293,7 @@ async function getStore() {
           questionId: string;
           status?: string;
           candidateMetricsJson?: string | null;
+          candidateCompletion?: string | null;
           judgeParsedJson?: string | null;
         }
       >;
@@ -281,7 +307,33 @@ afterEach(async () => {
   const store = await getStore();
   store.results.clear();
   store.questions.clear();
+  vi.unstubAllGlobals();
   fs.rmSync(RUNS_ROOT, { recursive: true, force: true });
+});
+
+test('createQueues uses model concurrency override when present', () => {
+  const config = makeConfig({ outDir: './runs' });
+  config.run.concurrency.candidate = 20;
+  config.models = [
+    {
+      id: 'normal',
+      router: 'openrouter',
+      model: 'normal-model',
+      candidateMode: 'direct',
+    },
+    {
+      id: 'free-lane',
+      router: 'openrouter',
+      model: 'free-model',
+      candidateMode: 'direct',
+      concurrency: 1,
+    },
+  ];
+
+  const { perModelQueue } = createQueues({ config, models: config.models });
+
+  expect(perModelQueue.get('normal')?.concurrency).toBe(20);
+  expect(perModelQueue.get('free-lane')?.concurrency).toBe(1);
 });
 
 describe('runBenchmark regression coverage', () => {
@@ -369,6 +421,89 @@ describe('runBenchmark regression coverage', () => {
     expect(judgeMock).not.toHaveBeenCalled();
   });
 
+  test('candidate-only resume skips rows that already have candidate text', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-only-resume');
+    const config: ApocbenchConfig = {
+      ...makeConfig({ outDir, resume: true }),
+      run: {
+        ...makeConfig({ outDir, resume: true }).run,
+        candidateOnly: true,
+      },
+    };
+    const questions = makeQuestions(1);
+    const runId = 'candidate-only-resume-test';
+    const { results } = await getStore();
+    results.set(`${runId}:m1:Q1`, {
+      runId,
+      modelId: 'm1',
+      questionId: 'Q1',
+      status: 'candidate_done',
+      candidateCompletion: 'existing candidate answer',
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: runId,
+    });
+
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
+  });
+
+  test('candidate-only runs store candidate text without resolving or calling judge', async () => {
+    const outDir = path.join(RUNS_ROOT, 'candidate-only');
+    const base = makeConfig({ outDir, resume: false });
+    const config: ApocbenchConfig = {
+      ...base,
+      run: {
+        ...base.run,
+        candidateOnly: true,
+      },
+    };
+    const resolveJudgeModel = vi.fn(() => fakeModel);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate-only answer',
+      usage: { prompt_tokens: 2, completion_tokens: 3 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'candidate-only-test',
+    });
+
+    expect(resolveJudgeModel).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
+
+    const { results } = await getStore();
+    const row = results.get('candidate-only-test:m1:Q1');
+    expect(row).toMatchObject({
+      status: 'candidate_done',
+      candidateCompletion: 'candidate-only answer',
+    });
+  });
+
   test('candidate metrics store normalized usage', async () => {
     const outDir = path.join(RUNS_ROOT, 'usage');
     const config = makeConfig({ outDir });
@@ -416,6 +551,70 @@ describe('runBenchmark regression coverage', () => {
       completionTokens: 4,
       totalTokens: 7,
     });
+  });
+
+  test('wiki runs fail readiness before generation when a required search capability is missing', async () => {
+    const outDir = path.join(RUNS_ROOT, 'wiki-capability');
+    const config: ApocbenchConfig = {
+      ...makeConfig({ outDir }),
+      wiki: {
+        enabled: true,
+        service: { baseUrl: 'http://127.0.0.1:8765' },
+        corpus: { manifestId: 'corpus-v1' },
+        index: { manifestId: 'index-v1' },
+        limits: {
+          searchTopK: 3,
+          readMaxChars: 1000,
+          contextMaxChars: 2000,
+          maxToolCalls: 4,
+          maxTurns: 3,
+        },
+      },
+      models: [
+        {
+          id: 'm1-rag-dense',
+          router: 'openrouter',
+          model: 'candidate-model',
+          candidateMode: 'rag-dense',
+        },
+      ],
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              corpus: { manifestId: 'corpus-v1' },
+              index: { manifestId: 'index-v1' },
+              capabilities: ['bm25', 'literal'],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+
+    await expect(
+      runBenchmark({
+        config,
+        configPath: 'x',
+        datasetPath: 'x',
+        datasetAbsolutePath: DATASET_ABS,
+        questions: makeQuestions(1),
+        deps: {
+          resolveModel: () => fakeModel,
+          resolveJudgeModel: () => fakeModel,
+          toolVersion: 'test',
+        },
+        dryRun: false,
+        runIdOverride: 'wiki-capability-test',
+      }),
+    ).rejects.toThrow(
+      "wiki service is missing required capability 'dense' for model 'm1-rag-dense'",
+    );
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(judgeMock).not.toHaveBeenCalled();
   });
 
   test('openai-compatible candidates receive standard max output tokens', async () => {
@@ -565,10 +764,187 @@ describe('runBenchmark regression coverage', () => {
     );
   });
 
+  test('question id override runs only the selected questions', async () => {
+    const outDir = path.join(RUNS_ROOT, 'question-id-filter');
+    const config = makeConfig({ outDir });
+    config.run.questionLimit = 1;
+    const questions = makeQuestions(5);
+
+    generateTextMock.mockResolvedValue({
+      text: 'candidate',
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+    judgeMock.mockResolvedValue({
+      object: judgeOutput,
+      raw: {},
+      didRepairRetry: false,
+    });
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions,
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'question-id-filter-test',
+      questionIdsOverride: ['Q2', 'Q4', 'Q5'],
+    });
+
+    expect(generateTextMock).toHaveBeenCalledTimes(3);
+    expect(judgeMock).toHaveBeenCalledTimes(3);
+
+    const { results } = await getStore();
+    const questionIds = Array.from(results.values())
+      .filter((row) => row.runId === 'question-id-filter-test')
+      .map((row) => row.questionId)
+      .sort();
+    expect(questionIds).toEqual(['Q2', 'Q4', 'Q5']);
+  });
+
+  test('question selection helper matches runner questionIds and limit behavior', () => {
+    const config = makeConfig({ outDir: path.join(RUNS_ROOT, 'selection-helper') });
+    config.run.questionLimit = 1;
+    config.run.questionIds = ['Q2', 'Q4', 'Q5'];
+
+    const selected = selectQuestions({
+      allQuestions: makeQuestions(5),
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    expect(selected.map((q) => q.id)).toEqual(['Q2']);
+
+    const overrideSelected = selectQuestions({
+      allQuestions: makeQuestions(5),
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: ['Q2', 'Q4', 'Q5'],
+    });
+    expect(overrideSelected.map((q) => q.id)).toEqual(['Q2', 'Q4', 'Q5']);
+  });
+
+  test('question selection shuffles deterministically before applying limits', () => {
+    const config = makeConfig({ outDir: path.join(RUNS_ROOT, 'selection-shuffle') });
+    config.run.questionLimit = 5;
+    config.run.questionOrder = 'shuffle';
+    config.run.questionSeed = 'seed-a';
+    const questions = [
+      ...makeQuestions(10).map((question) => ({
+        ...question,
+        category: 'Agriculture',
+      })),
+      ...makeQuestions(10).map((question, index) => ({
+        ...question,
+        id: `M${index + 1}`,
+        category: 'Medicine',
+      })),
+    ];
+
+    const first = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    const second = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+
+    expect(second.map((question) => question.id)).toEqual(
+      first.map((question) => question.id),
+    );
+    expect(first.map((question) => question.id)).not.toEqual([
+      'Q1',
+      'Q2',
+      'Q3',
+      'Q4',
+      'Q5',
+    ]);
+    expect(new Set(first.map((question) => question.category)).size).toBeGreaterThan(1);
+
+    config.run.questionSeed = 'seed-b';
+    const differentSeed = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    expect(differentSeed.map((question) => question.id)).not.toEqual(
+      first.map((question) => question.id),
+    );
+  });
+
+  test('tool-intent non-answers are auto-failed before judging', async () => {
+    const outDir = path.join(RUNS_ROOT, 'non-answer-autofail');
+    const config = makeConfig({ outDir });
+
+    generateTextMock.mockResolvedValue({
+      text: "We need to actually produce the tool calls JSON. Let's invoke search.",
+      usage: { prompt_tokens: 1, completion_tokens: 1 } as unknown,
+      providerMetadata: {},
+    } as unknown as Awaited<ReturnType<typeof generateText>>);
+
+    await runBenchmark({
+      config,
+      configPath: 'x',
+      datasetPath: 'x',
+      datasetAbsolutePath: DATASET_ABS,
+      questions: makeQuestions(1),
+      deps: {
+        resolveModel: () => fakeModel,
+        resolveJudgeModel: () => fakeModel,
+        toolVersion: 'test',
+      },
+      dryRun: false,
+      runIdOverride: 'non-answer-autofail-test',
+    });
+
+    expect(judgeMock).not.toHaveBeenCalled();
+
+    const { results } = await getStore();
+    const row = Array.from(results.values()).find(
+      (entry) => entry.runId === 'non-answer-autofail-test' && entry.questionId === 'Q1',
+    );
+    expect(row).toMatchObject({
+      status: 'done',
+      scoreOverall: 0,
+      autoFail: true,
+      autoFailReason:
+        'candidate described tool/search intent instead of providing a final answer',
+    });
+    expect(JSON.parse(row?.judgeParsedJson ?? '{}')).toMatchObject({
+      auto_fail: true,
+      overall_score: 0,
+      rubric_scores: { r1: 0 },
+    });
+  });
+
   test('ollama and openrouter candidate provider options stay provider-specific', async () => {
     const outDir = path.join(RUNS_ROOT, 'provider-options');
     const config = makeConfig({ outDir });
-    config.models = [{ id: 'm1', router: 'openrouter', model: 'candidate-model', provider: 'openrouter' }];
+    config.models = [
+      {
+        id: 'm1',
+        router: 'openrouter',
+        model: 'candidate-model',
+        provider: 'openrouter',
+      },
+    ];
     const questions = makeQuestions(1);
 
     generateTextMock.mockResolvedValue({
@@ -600,7 +976,9 @@ describe('runBenchmark regression coverage', () => {
     expect(generateTextMock).toHaveBeenCalledWith(
       expect.objectContaining({
         maxOutputTokens: 50,
-        providerOptions: { openrouter: { provider: { order: ['openrouter'], allow_fallbacks: false } } },
+        providerOptions: {
+          openrouter: { provider: { order: ['openrouter'], allow_fallbacks: false } },
+        },
       }),
     );
 
@@ -650,10 +1028,17 @@ describe('runBenchmark regression coverage', () => {
       outDir,
       retry: { maxRetries: 2, baseMs: 1, maxMs: 1 },
     });
-    const events: Array<{ type: string; attempt?: number; stage?: string; statusCode?: number }> = [];
+    const events: Array<{
+      type: string;
+      attempt?: number;
+      stage?: string;
+      statusCode?: number;
+    }> = [];
 
     generateTextMock
-      .mockRejectedValueOnce(Object.assign(new Error('Provider returned error'), { statusCode: 429 }))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Provider returned error'), { statusCode: 429 }),
+      )
       .mockRejectedValueOnce(new Error('temporarily rate-limited upstream'))
       .mockResolvedValueOnce({
         text: 'candidate',
@@ -720,7 +1105,8 @@ describe('runBenchmark regression coverage', () => {
     expect(generateTextMock).toHaveBeenCalledTimes(3);
     const { results } = await getStore();
     const row = Array.from(results.values()).find(
-      (entry) => entry.runId === 'candidate-retry-exhausted-test' && entry.questionId === 'Q1',
+      (entry) =>
+        entry.runId === 'candidate-retry-exhausted-test' && entry.questionId === 'Q1',
     );
     expect(row?.status).toBe('candidate_failed');
   });

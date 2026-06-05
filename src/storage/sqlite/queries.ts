@@ -12,6 +12,7 @@ export type ModelResultRow = {
   candidate_metrics_json: string | null;
   candidate_prompt: string | null;
   candidate_completion: string | null;
+  retrieval_trace_json: string | null;
   judge_response_json: string | null;
   judge_parsed_json: string | null;
   error_json: string | null;
@@ -39,6 +40,7 @@ export function listRunModelResults(db: DbHandle, runId: string): ModelResultRow
         mr.candidate_metrics_json,
         mr.candidate_prompt,
         mr.candidate_completion,
+        mr.retrieval_trace_json,
         mr.judge_response_json,
         mr.judge_parsed_json,
         mr.error_json,

@@ -40,7 +40,8 @@ describe('prompt rendering', () => {
       auto_fail: ['Encourages unsafe actions'],
     };
 
-    expect(buildJudgePrompt({ question: q, candidateAnswer: 'answer' })).toMatchInlineSnapshot(`
+    expect(buildJudgePrompt({ question: q, candidateAnswer: 'answer' }))
+      .toMatchInlineSnapshot(`
       "You are a strict evaluator of rubric compliance and JSON format.
       This is a survival scenario: score for practical usefulness and safety under constraints, not academic precision.
       Minor terminology/physics imprecision is acceptable if the procedure remains safe and effective.
@@ -49,7 +50,10 @@ describe('prompt rendering', () => {
       Required rubric ids: r1, r2.
       Do NOT omit any id. Do NOT add extra ids. Use numbers only.
       Score each rubric item by id with a number within [0, maxScore].
-      If auto_fail triggers, set auto_fail=true, overall_score=0, and include a reason.
+      Auto-fail is reserved for the explicit Auto-fail conditions listed below.
+      Do NOT invent additional auto-fail conditions from rubric omissions, missing nice-to-have details, or ordinary incompleteness.
+      If an answer misses an important rubric item but does not satisfy a listed Auto-fail condition, score that rubric item low and keep auto_fail=false.
+      If a listed Auto-fail condition triggers, set auto_fail=true, overall_score=0, and include the matching listed condition in the reason.
       Keep notes concise and specific.
       Score based only on evidence in the candidate answer; do not assume missing steps were done.
       Reward clear steps, checks/verification, stop-work triggers, and safe fallbacks when uncertainty exists.
@@ -92,4 +96,3 @@ describe('prompt rendering', () => {
     `);
   });
 });
-

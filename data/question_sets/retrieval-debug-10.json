@@ -1,0 +1,85 @@
+{
+  "id": "retrieval-debug-10",
+  "description": "Canonical broad-category Wikipedia retrieval development set. This is a dev harness, not a holdout benchmark: it mixes safety-critical, procedural, comparison, and measurement questions to test whether offline Wikipedia access improves answers without increasing catastrophic failures.",
+  "selectionDate": "2026-06-03",
+  "questionIds": [
+    "MAT-040",
+    "ENR-005",
+    "SAFE-023",
+    "ENR-014",
+    "SAFE-025",
+    "ENG-016",
+    "AGR-009",
+    "MED-025",
+    "MEAS-013",
+    "PH-014"
+  ],
+  "questions": [
+    {
+      "id": "MAT-040",
+      "category": "Materials",
+      "focus": "Caustic sodium silicate/waterglass procedure with safety-critical dilution."
+    },
+    {
+      "id": "ENR-005",
+      "category": "Energy",
+      "focus": "Charcoal kiln vs biogas vs waterwheel comparison with wood-use trade-offs."
+    },
+    {
+      "id": "SAFE-023",
+      "category": "Safety",
+      "focus": "Unknown-liquid identification with flame, sniffing, and handling hazards."
+    },
+    {
+      "id": "ENR-014",
+      "category": "Energy",
+      "focus": "Pulley ratio directionality and belt-drive safety."
+    },
+    {
+      "id": "SAFE-025",
+      "category": "Safety",
+      "focus": "White-phosphorus handling with dry brushing, oil, and re-ignition hazards."
+    },
+    {
+      "id": "ENG-016",
+      "category": "Engineering",
+      "focus": "Rope splice directionality, including against-the-lay vs with-the-lay details."
+    },
+    {
+      "id": "AGR-009",
+      "category": "Agriculture",
+      "focus": "Ecology and food-security critique with practical trade-offs."
+    },
+    {
+      "id": "MED-025",
+      "category": "Medicine",
+      "focus": "High-stakes breech-birth maneuver with exact procedural sequencing."
+    },
+    {
+      "id": "MEAS-013",
+      "category": "Measurement",
+      "focus": "Pendulum and water-clock constants with numeric accuracy requirements."
+    },
+    {
+      "id": "PH-014",
+      "category": "Public Health",
+      "focus": "Isolation-zone workflow with contamination-flow directionality."
+    }
+  ],
+  "reporting": {
+    "primaryMetrics": [
+      "median_score",
+      "mean_score",
+      "auto_fail_rate",
+      "zero_rate",
+      "win_rate_vs_direct",
+      "median_delta_vs_direct",
+      "mean_delta_vs_direct",
+      "iqr"
+    ],
+    "target": {
+      "meanLiftVsDirectPercent": 15,
+      "notes": "Lift should be interpreted with auto-fail and zero-rate side by side; do not hide catastrophic failures behind median-only reporting."
+    }
+  }
+}

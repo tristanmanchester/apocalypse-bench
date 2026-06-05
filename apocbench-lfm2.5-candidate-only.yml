@@ -1,9 +1,10 @@
 run:
-  name: 'lfm2.5-gemma4-deepseek-v4'
+  name: 'lfm2.5-gemma4-candidate-only'
   datasetPaths:
     - './data/question_bank'
   outDir: './runs'
   resume: true
+  candidateOnly: true
   questionLimit: null
   categories: null
   maxBudgetUsd: null
@@ -16,11 +17,12 @@ candidate:
 
 judge:
   router: 'openrouter'
-  model: 'deepseek/deepseek-v4-flash'
+  # Ignored when run.candidateOnly=true; score completed rows with scripts/codex_rejudge.ts.
+  model: 'openai/gpt-4.1-nano'
   temperature: null
   maxTokens: 4096
   structured: true
-  reasoning: true
+  reasoning: false
 
 routers:
   ollama:
@@ -35,7 +37,7 @@ routers:
     baseUrl: 'https://openrouter.ai/api/v1'
     apiKeyEnv: 'OPENROUTER_API_KEY'
     headers:
-      HTTP-Referer: 'https://github.com/yourname/apocalypse-bench'
+      HTTP-Referer: 'https://github.com/tristanmanchester/apocalypse-bench'
       X-Title: 'apocalypse-bench'
     default:
       temperature: null

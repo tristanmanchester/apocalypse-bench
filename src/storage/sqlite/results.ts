@@ -1,6 +1,11 @@
 import type { DbHandle } from './db';
 
-export type ResultStatus = 'done' | 'candidate_done' | 'candidate_failed' | 'judge_failed' | 'skipped';
+export type ResultStatus =
+  | 'done'
+  | 'candidate_done'
+  | 'candidate_failed'
+  | 'judge_failed'
+  | 'skipped';
 
 export type UpsertResultParams = {
   runId: string;
@@ -9,6 +14,7 @@ export type UpsertResultParams = {
   candidatePrompt?: string;
   candidateCompletion?: string;
   candidateMetricsJson?: string;
+  retrievalTraceJson?: string;
   judgeRequestJson?: string;
   judgeResponseJson?: string;
   judgeParsedJson?: string;
@@ -34,9 +40,36 @@ export function isResultDone(
       WHERE run_id = ? AND model_id = ? AND question_id = ?
     `,
     )
-    .get(runId, modelId, questionId) as { status?: string; judge_parsed_json?: string } | undefined;
+    .get(runId, modelId, questionId) as
+    | { status?: string; judge_parsed_json?: string }
+    | undefined;
 
   return row?.status === 'done' && Boolean(row.judge_parsed_json);
+}
+
+export function isCandidateDone(
+  db: DbHandle,
+  runId: string,
+  modelId: string,
+  questionId: string,
+): boolean {
+  const row = db
+    .prepare(
+      `
+      SELECT status, candidate_completion
+      FROM model_results
+      WHERE run_id = ? AND model_id = ? AND question_id = ?
+    `,
+    )
+    .get(runId, modelId, questionId) as
+    | { status?: string; candidate_completion?: string }
+    | undefined;
+
+  return (
+    (row?.status === 'candidate_done' || row?.status === 'done') &&
+    typeof row.candidate_completion === 'string' &&
+    row.candidate_completion.trim().length > 0
+  );
 }
 
 export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
@@ -45,6 +78,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     INSERT INTO model_results (
       run_id, model_id, question_id,
       candidate_prompt, candidate_completion, candidate_metrics_json,
+      retrieval_trace_json,
       judge_request_json, judge_response_json, judge_parsed_json,
       score_overall, score_rubric_json,
       auto_fail, auto_fail_reason,
@@ -52,6 +86,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     ) VALUES (
       @run_id, @model_id, @question_id,
       @candidate_prompt, @candidate_completion, @candidate_metrics_json,
+      @retrieval_trace_json,
       @judge_request_json, @judge_response_json, @judge_parsed_json,
       @score_overall, @score_rubric_json,
       @auto_fail, @auto_fail_reason,
@@ -61,6 +96,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
       candidate_prompt = COALESCE(excluded.candidate_prompt, model_results.candidate_prompt),
       candidate_completion = COALESCE(excluded.candidate_completion, model_results.candidate_completion),
       candidate_metrics_json = COALESCE(excluded.candidate_metrics_json, model_results.candidate_metrics_json),
+      retrieval_trace_json = COALESCE(excluded.retrieval_trace_json, model_results.retrieval_trace_json),
       judge_request_json = COALESCE(excluded.judge_request_json, model_results.judge_request_json),
       judge_response_json = COALESCE(excluded.judge_response_json, model_results.judge_response_json),
       judge_parsed_json = COALESCE(excluded.judge_parsed_json, model_results.judge_parsed_json),
@@ -78,6 +114,7 @@ export function upsertResult(db: DbHandle, p: UpsertResultParams): void {
     candidate_prompt: p.candidatePrompt ?? null,
     candidate_completion: p.candidateCompletion ?? null,
     candidate_metrics_json: p.candidateMetricsJson ?? null,
+    retrieval_trace_json: p.retrievalTraceJson ?? null,
     judge_request_json: p.judgeRequestJson ?? null,
     judge_response_json: p.judgeResponseJson ?? null,
     judge_parsed_json: p.judgeParsedJson ?? null,
