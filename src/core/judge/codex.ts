@@ -9,6 +9,7 @@ import PQueue from 'p-queue';
 import type { DatasetLine } from '../dataset/schema';
 import { loadJsonlMany } from '../dataset/loadJsonl';
 import { buildJudgePrompt } from '../prompts/judgePrompt';
+import { computeOverallScore } from '../runner/judge';
 import type { JudgeOutput } from '../runner/types';
 import { openAndMigrate } from '../../storage/sqlite/migrate';
 import { insertQuestions } from '../../storage/sqlite/questions';
@@ -820,6 +821,26 @@ export function validateBatchOutput(
   return byKey;
 }
 
+export function normalizeCodexJudgeOutput(params: {
+  judgeOutput: JudgeOutput;
+  rubric: DatasetLine['rubric'];
+}): JudgeOutput {
+  const computed = computeOverallScore({
+    judgeOutput: params.judgeOutput,
+    rubric: params.rubric.map((item) => ({
+      id: item.id,
+      weight: item.weight,
+      maxScore: item.maxScore,
+    })),
+  });
+
+  return {
+    ...params.judgeOutput,
+    rubric_scores: computed.rubricScores,
+    overall_score: computed.overallScore,
+  };
+}
+
 async function judgeBatchWithRetry(
   args: CodexRejudgeArgs,
   outRun: string,
@@ -851,14 +872,10 @@ function storeDone(
   judgeCase: JudgeCase,
   item: CodexJudgeItem,
 ): void {
-  const judgeParsed: JudgeOutput = {
-    rubric_scores: item.rubric_scores,
-    auto_fail: item.auto_fail,
-    auto_fail_reason: item.auto_fail_reason,
-    overall_score: item.overall_score,
-    notes: item.notes,
-    unsafe_flags: item.unsafe_flags,
-  };
+  const judgeParsed = normalizeCodexJudgeOutput({
+    judgeOutput: item,
+    rubric: judgeCase.question.rubric,
+  });
 
   upsertResult(db, {
     runId: outRun,
@@ -885,10 +902,10 @@ function storeDone(
     }),
     judgeResponseJson: JSON.stringify(item),
     judgeParsedJson: JSON.stringify(judgeParsed),
-    scoreOverall: item.overall_score,
-    scoreRubricJson: JSON.stringify(item.rubric_scores),
-    autoFail: item.auto_fail,
-    autoFailReason: item.auto_fail_reason,
+    scoreOverall: judgeParsed.overall_score,
+    scoreRubricJson: JSON.stringify(judgeParsed.rubric_scores),
+    autoFail: judgeParsed.auto_fail,
+    autoFailReason: judgeParsed.auto_fail_reason,
   });
 }
 

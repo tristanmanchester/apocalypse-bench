@@ -9,6 +9,7 @@ import type { JudgeOutput } from '../src/core/runner/types';
 import {
   buildBatchPrompt,
   buildJudgeBatches,
+  normalizeCodexJudgeOutput,
   outputSchemaForBatch,
   parseCodexRejudgeArgs,
   setupRun,
@@ -346,6 +347,31 @@ describe('codex rejudge prompt and schema', () => {
         ],
       }),
     ).toThrow(/non-array unsafe_flags/);
+  });
+
+  test('normalization clamps rubric scores and recomputes auto-fail overall score', () => {
+    const item = outputItem('ENG-001', 'direct', {
+      rubric_scores: Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [
+          `r${index + 1}`,
+          index === 0 ? 99 : 1,
+        ]),
+      ),
+      auto_fail: true,
+      auto_fail_reason: 'Refusal to answer.',
+      overall_score: 8,
+    });
+
+    const normalized = normalizeCodexJudgeOutput({
+      judgeOutput: item,
+      rubric: question('ENG-001', 'Engineering').rubric,
+    });
+
+    expect(normalized.rubric_scores.r1).toBe(1);
+    expect(normalized.rubric_scores.r2).toBe(1);
+    expect(normalized.overall_score).toBe(0);
+    expect(normalized.auto_fail).toBe(true);
+    expect(normalized.auto_fail_reason).toBe('Refusal to answer.');
   });
 });
 
