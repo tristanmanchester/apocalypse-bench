@@ -164,6 +164,10 @@ export async function runPiWikiAgent(params: {
         const envName = config.routers.openrouter.apiKeyEnv;
         return process.env[envName];
       }
+      if (provider === 'openai-compatible') {
+        const envName = config.routers.openaiCompatible?.apiKeyEnv;
+        return envName ? process.env[envName] : undefined;
+      }
       if (provider === 'ollama') return 'ollama';
       return undefined;
     },

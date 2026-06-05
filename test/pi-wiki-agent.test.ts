@@ -13,6 +13,7 @@ type MockAgentOptions = {
     tools: MockTool[];
     messages: unknown[];
   };
+  getApiKey: (provider: string) => string | undefined;
   beforeToolCall: (context: unknown) => Promise<unknown>;
 };
 
@@ -149,6 +150,7 @@ describe('runPiWikiAgent', () => {
     agentMock.onPrompt = undefined;
     agentMock.thinkingText = undefined;
     agentMock.promptCalls = 0;
+    delete process.env.LOCAL_OPENAI_API_KEY;
   });
 
   test('creates a Pi OpenRouter agent with bounded wiki tools and trace recording', async () => {
@@ -312,6 +314,41 @@ describe('runPiWikiAgent', () => {
       supportsDeveloperRole: false,
       supportsReasoningEffort: false,
     });
+  });
+
+  test('passes configured OpenAI-compatible API keys to Pi agent runs', async () => {
+    process.env.LOCAL_OPENAI_API_KEY = 'local-key';
+    const { runPiWikiAgent } = await import('../src/adapters/pi/wikiAgent');
+    const modelEntry = {
+      ...config.models[0]!,
+      id: 'local-openai-agent',
+      router: 'openai-compatible' as const,
+      model: 'local/model',
+      candidateMode: 'agent-bm25' as const,
+    };
+
+    await runPiWikiAgent({
+      config: {
+        ...config,
+        routers: {
+          ...config.routers,
+          openaiCompatible: {
+            baseUrl: 'http://127.0.0.1:8000/v1',
+            apiKeyEnv: 'LOCAL_OPENAI_API_KEY',
+            default: { maxTokens: 1024 },
+          },
+        },
+        models: [modelEntry],
+      },
+      modelEntry,
+      basePrompt: 'How do I make river water safer?',
+      mode: 'agent-bm25',
+      wikiClient: wikiClientStub(),
+    });
+
+    expect(agentMock.options?.initialState.model.provider).toBe('openai-compatible');
+    expect(agentMock.options?.getApiKey('openai-compatible')).toBe('local-key');
+    expect(agentMock.options?.getApiKey('openrouter')).toBeUndefined();
   });
 
   test('strips native channel wrappers from final answer text', async () => {

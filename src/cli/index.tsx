@@ -846,16 +846,25 @@ async function judgeCommand(this: CliContext, flags: JudgeFlags): Promise<void> 
   if (flags.json) console.log(JSON.stringify(summary));
 }
 
-function countCompleteCandidateRows(
+export function countCompleteCandidateRows(
   db: ReturnType<typeof openAndMigrate>,
   runId: string,
   modelIds?: readonly string[],
+  questionIds?: readonly string[],
 ): number {
+  if (modelIds && modelIds.length === 0) return 0;
+  if (questionIds && questionIds.length === 0) return 0;
+
   const params: unknown[] = [runId];
   let modelFilter = '';
   if (modelIds && modelIds.length > 0) {
     modelFilter = `and model_id in (${modelIds.map(() => '?').join(',')})`;
     params.push(...modelIds);
+  }
+  let questionFilter = '';
+  if (questionIds && questionIds.length > 0) {
+    questionFilter = `and question_id in (${questionIds.map(() => '?').join(',')})`;
+    params.push(...questionIds);
   }
 
   const row = db
@@ -864,6 +873,7 @@ function countCompleteCandidateRows(
        from model_results
        where run_id = ?
          ${modelFilter}
+         ${questionFilter}
          and status in ('candidate_done', 'done')
          and candidate_completion is not null
          and length(trim(candidate_completion)) > 0`,
@@ -1105,16 +1115,16 @@ async function runAndJudgeCommand(
     const dataset = candidateConfig.run.datasetPaths
       ? loadJsonlMany(candidateConfig.run.datasetPaths)
       : loadJsonl(candidateConfig.run.datasetPath!);
-    const selectedQuestionCount = selectQuestions({
+    const selectedQuestions = selectQuestions({
       allQuestions: dataset.lines,
       config: candidateConfig,
       limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
       categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
       questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
-    }).length;
+    });
     const expectedCandidates = expectedCandidateCountForRunAndJudge({
       config: candidateConfig,
-      questionCount: selectedQuestionCount,
+      questionCount: selectedQuestions.length,
       requestedModelIds: flags.models,
     });
     const result = {
@@ -1137,23 +1147,29 @@ async function runAndJudgeCommand(
   const dataset = candidateConfig.run.datasetPaths
     ? loadJsonlMany(candidateConfig.run.datasetPaths)
     : loadJsonl(candidateConfig.run.datasetPath!);
-  const selectedQuestionCount = selectQuestions({
+  const selectedQuestions = selectQuestions({
     allQuestions: dataset.lines,
     config: candidateConfig,
     limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
     categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
     questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
-  }).length;
+  });
   const selectedModelIds = selectedModelIdsForRunAndJudge(candidateConfig, flags.models);
   const expectedCandidates = expectedCandidateCountForRunAndJudge({
     config: candidateConfig,
-    questionCount: selectedQuestionCount,
+    questionCount: selectedQuestions.length,
     requestedModelIds: flags.models,
   });
+  const selectedQuestionIds = selectedQuestions.map((question) => question.id);
   const db = openAndMigrate(
     path.resolve(process.cwd(), candidateConfig.run.outDir, 'apocbench.sqlite'),
   );
-  const completeCandidates = countCompleteCandidateRows(db, runId, selectedModelIds);
+  const completeCandidates = countCompleteCandidateRows(
+    db,
+    runId,
+    selectedModelIds,
+    selectedQuestionIds,
+  );
   if (completeCandidates !== expectedCandidates) {
     throw new Error(
       `candidate run incomplete: ${completeCandidates}/${expectedCandidates} candidate rows complete`,
