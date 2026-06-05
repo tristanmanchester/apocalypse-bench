@@ -796,7 +796,7 @@ function datasetPathForCodexJudge(config: ApocbenchConfig): string {
   return config.run.datasetPath!;
 }
 
-function codexArgsFromConfig(params: {
+export function codexArgsFromConfig(params: {
   config: ApocbenchConfig;
   sourceRun: string;
   outRun?: string;
@@ -944,10 +944,16 @@ function summarizeConditionRows(rows: ReturnType<typeof listRunModelResults>) {
   };
 }
 
+function rowMatchesRun(row: ReturnType<typeof listRunModelResults>[number], runId?: string): boolean {
+  return runId == null || row.run_id === runId;
+}
+
 function pairedDeltasForRows(params: {
   rows: ReturnType<typeof listRunModelResults>;
   baselineSuffix: string;
   comparisonSuffix: string;
+  baselineRunId?: string;
+  comparisonRunId?: string;
   modelBase?: string;
 }) {
   const baseline = new Map<string, number>();
@@ -955,6 +961,7 @@ function pairedDeltasForRows(params: {
   for (const row of params.rows) {
     const baselineBase = stripModelSuffix(row.model_id, params.baselineSuffix);
     if (
+      rowMatchesRun(row, params.baselineRunId) &&
       baselineBase &&
       (!params.modelBase || baselineBase === params.modelBase) &&
       row.status === 'done' &&
@@ -964,6 +971,7 @@ function pairedDeltasForRows(params: {
     }
     const comparisonBase = stripModelSuffix(row.model_id, params.comparisonSuffix);
     if (
+      rowMatchesRun(row, params.comparisonRunId) &&
       comparisonBase &&
       (!params.modelBase || comparisonBase === params.modelBase) &&
       row.status === 'done' &&
@@ -988,7 +996,7 @@ function pairedDeltasForRows(params: {
   };
 }
 
-function buildPairedComparisonReport(params: {
+export function buildPairedComparisonReport(params: {
   runId: string;
   rows: ReturnType<typeof listRunModelResults>;
   baselineSuffix: string;
@@ -996,19 +1004,24 @@ function buildPairedComparisonReport(params: {
   baselineRunId?: string;
   comparisonRunId?: string;
 }) {
-  const baselineRows = params.rows.filter((row) =>
-    Boolean(stripModelSuffix(row.model_id, params.baselineSuffix)),
+  const baselineRows = params.rows.filter(
+    (row) =>
+      rowMatchesRun(row, params.baselineRunId) &&
+      Boolean(stripModelSuffix(row.model_id, params.baselineSuffix)),
   );
-  const comparisonRows = params.rows.filter((row) =>
-    Boolean(stripModelSuffix(row.model_id, params.comparisonSuffix)),
+  const comparisonRows = params.rows.filter(
+    (row) =>
+      rowMatchesRun(row, params.comparisonRunId) &&
+      Boolean(stripModelSuffix(row.model_id, params.comparisonSuffix)),
   );
   const modelBases = Array.from(
     new Set(
-      params.rows
-        .flatMap((row) => [
-          stripModelSuffix(row.model_id, params.baselineSuffix),
+      [
+        ...baselineRows.map((row) => stripModelSuffix(row.model_id, params.baselineSuffix)),
+        ...comparisonRows.map((row) =>
           stripModelSuffix(row.model_id, params.comparisonSuffix),
-        ])
+        ),
+      ]
         .filter((value): value is string => Boolean(value)),
     ),
   ).sort((left, right) => left.localeCompare(right));
@@ -1184,6 +1197,7 @@ async function runAndJudgeCommand(
       sourceRun: runId,
       outRun,
       resume: flags.resume ?? true,
+      limit: flags.limit,
       models: flags.models,
     }),
   );

@@ -5,11 +5,14 @@ import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 
 import {
+  buildPairedComparisonReport,
   countCompleteCandidateRows,
+  codexArgsFromConfig,
   expectedCandidateCountForRunAndJudge,
   selectedModelIdsForRunAndJudge,
 } from '../src/cli/index';
 import type { ApocbenchConfig } from '../src/core/config/schema';
+import type { ModelResultRow } from '../src/storage/sqlite/queries';
 import { closeDb } from '../src/storage/sqlite/db';
 import { openAndMigrate } from '../src/storage/sqlite/migrate';
 import { insertQuestions } from '../src/storage/sqlite/questions';
@@ -45,6 +48,33 @@ function configWithModels(modelIds: string[]): ApocbenchConfig {
       router: 'ollama',
       model: id,
     })),
+  };
+}
+
+function resultRow(overrides: Partial<ModelResultRow>): ModelResultRow {
+  return {
+    run_id: 'run',
+    model_id: 'model-direct',
+    question_id: 'Q1',
+    score_overall: 0,
+    score_rubric_json: null,
+    auto_fail: 0,
+    auto_fail_reason: null,
+    status: 'done',
+    candidate_metrics_json: null,
+    candidate_prompt: null,
+    candidate_completion: null,
+    retrieval_trace_json: null,
+    judge_response_json: null,
+    judge_parsed_json: null,
+    error_json: null,
+    category: null,
+    difficulty: null,
+    prompt: null,
+    scenario: null,
+    rubric_json: null,
+    auto_fail_json: null,
+    ...overrides,
   };
 }
 
@@ -124,5 +154,66 @@ describe('run-and-judge candidate counting', () => {
       closeDb();
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  test('Codex rejudge args preserve the run-and-judge limit', () => {
+    const config = configWithModels(['direct', 'bm25']);
+
+    const args = codexArgsFromConfig({
+      config,
+      sourceRun: 'candidate-run',
+      outRun: 'judge-run',
+      resume: true,
+      limit: 2,
+      models: ['bm25'],
+    });
+
+    expect(args.limit).toBe(2);
+    expect(args.models).toEqual(['bm25']);
+  });
+});
+
+describe('paired comparison reports', () => {
+  test('cross-run comparisons keep baseline and comparison run rows separate', () => {
+    const report = buildPairedComparisonReport({
+      runId: 'baseline-run..comparison-run',
+      baselineRunId: 'baseline-run',
+      comparisonRunId: 'comparison-run',
+      baselineSuffix: 'direct',
+      comparisonSuffix: 'agent-bm25-research',
+      rows: [
+        resultRow({
+          run_id: 'baseline-run',
+          model_id: 'gemma-direct',
+          question_id: 'Q1',
+          score_overall: 1,
+        }),
+        resultRow({
+          run_id: 'baseline-run',
+          model_id: 'gemma-agent-bm25-research',
+          question_id: 'Q1',
+          score_overall: 2,
+        }),
+        resultRow({
+          run_id: 'comparison-run',
+          model_id: 'gemma-direct',
+          question_id: 'Q1',
+          score_overall: 9,
+        }),
+        resultRow({
+          run_id: 'comparison-run',
+          model_id: 'gemma-agent-bm25-research',
+          question_id: 'Q1',
+          score_overall: 5,
+        }),
+      ],
+    });
+
+    expect(report.overall.baseline.rows).toBe(1);
+    expect(report.overall.baseline.meanScore).toBe(1);
+    expect(report.overall.comparison.rows).toBe(1);
+    expect(report.overall.comparison.meanScore).toBe(5);
+    expect(report.overall.paired.pairedCount).toBe(1);
+    expect(report.overall.paired.meanDelta).toBe(4);
   });
 });
