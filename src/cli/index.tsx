@@ -14,8 +14,13 @@ import {
   resolveJudgeModel as resolveConfiguredJudgeModel,
 } from './modelResolver';
 import { loadConfig } from '../core/config/loadConfig';
-import type { ApocbenchConfig } from '../core/config/schema';
+import { isCodexJudgeConfig, type ApocbenchConfig } from '../core/config/schema';
 import { expandDatasetPaths, loadJsonl, loadJsonlMany } from '../core/dataset/loadJsonl';
+import {
+  runCodexRejudge,
+  type BatchStrategy,
+  type CodexRejudgeArgs,
+} from '../core/judge/codex';
 import type { RunnerEvent } from '../core/runner/orchestrator';
 import { runBenchmark, selectQuestions } from '../core/runner/orchestrator';
 import { sanitizeEvent } from '../core/runner/sanitizeEvent';
@@ -748,6 +753,411 @@ type DiffFlags = {
   outDir?: string;
 };
 
+type JudgeFlags = {
+  config: string;
+  sourceRun?: string;
+  'source-run'?: string;
+  outRun?: string;
+  'out-run'?: string;
+  resume?: boolean;
+  limit?: number;
+  models?: readonly string[];
+  json?: boolean;
+};
+
+type RunAndJudgeFlags = RunFlags & {
+  outRun?: string;
+  resume?: boolean;
+  compareOut?: string;
+};
+
+type CompareFlags = {
+  run?: string;
+  baselineRun?: string;
+  'baseline-run'?: string;
+  comparisonRun?: string;
+  'comparison-run'?: string;
+  outDir?: string;
+  'out-dir'?: string;
+  baselineSuffix?: string;
+  'baseline-suffix'?: string;
+  comparisonSuffix?: string;
+  'comparison-suffix'?: string;
+  out?: string;
+};
+
+function datasetPathForCodexJudge(config: ApocbenchConfig): string {
+  if (config.run.datasetPaths) {
+    if (config.run.datasetPaths.length !== 1) {
+      throw new Error('Codex judge currently requires exactly one datasetPaths entry');
+    }
+    return config.run.datasetPaths[0]!;
+  }
+  return config.run.datasetPath!;
+}
+
+function codexArgsFromConfig(params: {
+  config: ApocbenchConfig;
+  sourceRun: string;
+  outRun?: string;
+  resume?: boolean;
+  limit?: number;
+  models?: readonly string[];
+}): CodexRejudgeArgs {
+  const { config } = params;
+  if (!isCodexJudgeConfig(config.judge)) {
+    throw new Error('dev judge requires judge.backend=codex-cli');
+  }
+  return {
+    db: path.join(config.run.outDir, 'apocbench.sqlite'),
+    sourceRun: params.sourceRun,
+    outRun: params.outRun,
+    dataset: datasetPathForCodexJudge(config),
+    codexBin: config.judge.codexBin,
+    model: config.judge.model,
+    reasoning: config.judge.reasoning,
+    disableFeatures: config.judge.disableFeatures,
+    batchSize: config.judge.batchSize,
+    batchStrategy: config.judge.batchStrategy as BatchStrategy,
+    concurrency: config.judge.concurrency,
+    maxRetries: config.judge.maxRetries,
+    tmpDir: config.judge.tmpDir,
+    limit: params.limit,
+    models: params.models ? Array.from(params.models) : undefined,
+    sourceStatus: config.judge.sourceStatus,
+    resume: params.resume ?? false,
+  };
+}
+
+async function judgeCommand(this: CliContext, flags: JudgeFlags): Promise<void> {
+  const { config } = loadConfig(flags.config);
+  const sourceRun = flags.sourceRun ?? flags['source-run'];
+  if (!sourceRun) die('missing source run id (pass --sourceRun or --source-run)');
+  const summary = await runCodexRejudge(
+    codexArgsFromConfig({
+      config,
+      sourceRun,
+      outRun: flags.outRun ?? flags['out-run'],
+      resume: flags.resume,
+      limit: flags.limit,
+      models: flags.models,
+    }),
+  );
+  if (flags.json) console.log(JSON.stringify(summary));
+}
+
+function countCompleteCandidateRows(
+  db: ReturnType<typeof openAndMigrate>,
+  runId: string,
+): number {
+  const row = db
+    .prepare(
+      `select count(*) as count
+       from model_results
+       where run_id = ?
+         and status in ('candidate_done', 'done')
+         and candidate_completion is not null
+         and length(trim(candidate_completion)) > 0`,
+    )
+    .get(runId) as { count: number };
+  return row.count;
+}
+
+function stripModelSuffix(modelId: string, suffix: string): string | null {
+  const token = `-${suffix}`;
+  return modelId.endsWith(token) ? modelId.slice(0, -token.length) : null;
+}
+
+function mean(values: number[]): number | null {
+  return values.length === 0
+    ? null
+    : values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+function summarizeConditionRows(rows: ReturnType<typeof listRunModelResults>) {
+  const done = rows.filter(
+    (row) => row.status === 'done' && typeof row.score_overall === 'number',
+  );
+  const scores = done.map((row) => row.score_overall as number);
+  const autoFails = done.filter((row) => row.auto_fail === 1).length;
+  const zeros = done.filter((row) => row.score_overall === 0).length;
+  return {
+    rows: rows.length,
+    done: done.length,
+    failures: rows.length - done.length,
+    meanScore: mean(scores),
+    medianScore: median(scores),
+    autoFails,
+    autoFailRate: done.length === 0 ? null : autoFails / done.length,
+    zeros,
+    zeroRate: done.length === 0 ? null : zeros / done.length,
+  };
+}
+
+function pairedDeltasForRows(params: {
+  rows: ReturnType<typeof listRunModelResults>;
+  baselineSuffix: string;
+  comparisonSuffix: string;
+  modelBase?: string;
+}) {
+  const baseline = new Map<string, number>();
+  const comparisonRows = [];
+  for (const row of params.rows) {
+    const baselineBase = stripModelSuffix(row.model_id, params.baselineSuffix);
+    if (
+      baselineBase &&
+      (!params.modelBase || baselineBase === params.modelBase) &&
+      row.status === 'done' &&
+      typeof row.score_overall === 'number'
+    ) {
+      baseline.set(`${baselineBase}\u0000${row.question_id}`, row.score_overall);
+    }
+    const comparisonBase = stripModelSuffix(row.model_id, params.comparisonSuffix);
+    if (
+      comparisonBase &&
+      (!params.modelBase || comparisonBase === params.modelBase) &&
+      row.status === 'done' &&
+      typeof row.score_overall === 'number'
+    ) {
+      comparisonRows.push({ ...row, modelBase: comparisonBase });
+    }
+  }
+  const deltas = comparisonRows
+    .map((row) => {
+      const baselineScore = baseline.get(`${row.modelBase}\u0000${row.question_id}`);
+      return baselineScore == null ? null : (row.score_overall as number) - baselineScore;
+    })
+    .filter((value): value is number => value != null);
+  return {
+    pairedCount: deltas.length,
+    meanDelta: mean(deltas),
+    medianDelta: median(deltas),
+    wins: deltas.filter((delta) => delta > 0).length,
+    losses: deltas.filter((delta) => delta < 0).length,
+    ties: deltas.filter((delta) => delta === 0).length,
+  };
+}
+
+function buildPairedComparisonReport(params: {
+  runId: string;
+  rows: ReturnType<typeof listRunModelResults>;
+  baselineSuffix: string;
+  comparisonSuffix: string;
+  baselineRunId?: string;
+  comparisonRunId?: string;
+}) {
+  const baselineRows = params.rows.filter((row) =>
+    Boolean(stripModelSuffix(row.model_id, params.baselineSuffix)),
+  );
+  const comparisonRows = params.rows.filter((row) =>
+    Boolean(stripModelSuffix(row.model_id, params.comparisonSuffix)),
+  );
+  const modelBases = Array.from(
+    new Set(
+      params.rows
+        .flatMap((row) => [
+          stripModelSuffix(row.model_id, params.baselineSuffix),
+          stripModelSuffix(row.model_id, params.comparisonSuffix),
+        ])
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+  return {
+    runId: params.runId,
+    sourceRuns: {
+      baseline: params.baselineRunId ?? params.runId,
+      comparison: params.comparisonRunId ?? params.runId,
+    },
+    baselineSuffix: params.baselineSuffix,
+    comparisonSuffix: params.comparisonSuffix,
+    overall: {
+      baseline: summarizeConditionRows(baselineRows),
+      comparison: summarizeConditionRows(comparisonRows),
+      paired: pairedDeltasForRows(params),
+    },
+    models: modelBases.map((modelBase) => ({
+      modelBase,
+      baseline: summarizeConditionRows(
+        baselineRows.filter(
+          (row) => stripModelSuffix(row.model_id, params.baselineSuffix) === modelBase,
+        ),
+      ),
+      comparison: summarizeConditionRows(
+        comparisonRows.filter(
+          (row) => stripModelSuffix(row.model_id, params.comparisonSuffix) === modelBase,
+        ),
+      ),
+      paired: pairedDeltasForRows({ ...params, modelBase }),
+    })),
+  };
+}
+
+async function compareCommand(
+  this: CliContext,
+  flags: CompareFlags,
+  runId?: string,
+): Promise<void> {
+  const resolvedRunId = flags.run ?? runId;
+  const baselineRunId = flags.baselineRun ?? flags['baseline-run'] ?? resolvedRunId;
+  const comparisonRunId =
+    flags.comparisonRun ?? flags['comparison-run'] ?? resolvedRunId;
+  if (!baselineRunId || !comparisonRunId) {
+    die(
+      'missing scored run id (pass positional runId/--run, or both --baseline-run and --comparison-run)',
+    );
+  }
+  const outDir = flags.outDir ?? flags['out-dir'] ?? './runs';
+  const db = openAndMigrate(path.resolve(process.cwd(), outDir, 'apocbench.sqlite'));
+  const rows =
+    baselineRunId === comparisonRunId
+      ? listRunModelResults(db, baselineRunId)
+      : [
+          ...listRunModelResults(db, baselineRunId),
+          ...listRunModelResults(db, comparisonRunId),
+        ];
+  const report = buildPairedComparisonReport({
+    runId:
+      resolvedRunId ??
+      (baselineRunId === comparisonRunId
+        ? baselineRunId
+        : `${baselineRunId}..${comparisonRunId}`),
+    rows,
+    baselineSuffix: flags.baselineSuffix ?? flags['baseline-suffix'] ?? 'direct',
+    comparisonSuffix:
+      flags.comparisonSuffix ?? flags['comparison-suffix'] ?? 'agent-bm25-research',
+    baselineRunId,
+    comparisonRunId,
+  });
+  if (flags.out) {
+    fs.mkdirSync(path.dirname(path.resolve(process.cwd(), flags.out)), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.resolve(process.cwd(), flags.out),
+      JSON.stringify(report, null, 2),
+    );
+  }
+  console.log(JSON.stringify(report, null, 2));
+}
+
+async function runAndJudgeCommand(
+  this: CliContext,
+  flags: RunAndJudgeFlags,
+  runId: string,
+): Promise<void | Error> {
+  const { config } = loadConfig(flags.config);
+  if (!isCodexJudgeConfig(config.judge)) {
+    throw new Error('run-and-judge requires judge.backend=codex-cli');
+  }
+  if (config.run.candidateOnly !== true) {
+    throw new Error('run-and-judge requires run.candidateOnly=true');
+  }
+  const candidateConfig: ApocbenchConfig = {
+    ...config,
+    run: { ...config.run, candidateOnly: true },
+  };
+  await runCommand.call(
+    this,
+    { ...flags, quiet: true, json: false, config: flags.config },
+    runId,
+    flags.resume === true,
+  );
+  if (flags.dryRun) {
+    const dataset = candidateConfig.run.datasetPaths
+      ? loadJsonlMany(candidateConfig.run.datasetPaths)
+      : loadJsonl(candidateConfig.run.datasetPath!);
+    const expectedCandidates =
+      selectQuestions({
+        allQuestions: dataset.lines,
+        config: candidateConfig,
+        limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
+        categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+        questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
+      }).length * candidateConfig.models.length;
+    const result = {
+      candidateRunId: runId,
+      dryRun: true,
+      expectedCandidates,
+      judgeBackend: config.judge.backend,
+      judgeModel: config.judge.model,
+      batchStrategy: config.judge.batchStrategy,
+      batchSize: config.judge.batchSize,
+      judgeConcurrency: config.judge.concurrency,
+    };
+    if (flags.json) {
+      console.log(JSON.stringify(result));
+    } else {
+      console.log(JSON.stringify(result, null, 2));
+    }
+    return;
+  }
+  const dataset = candidateConfig.run.datasetPaths
+    ? loadJsonlMany(candidateConfig.run.datasetPaths)
+    : loadJsonl(candidateConfig.run.datasetPath!);
+  const expectedCandidates =
+    selectQuestions({
+      allQuestions: dataset.lines,
+      config: candidateConfig,
+      limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
+      categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+      questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
+    }).length * candidateConfig.models.length;
+  const db = openAndMigrate(
+    path.resolve(process.cwd(), candidateConfig.run.outDir, 'apocbench.sqlite'),
+  );
+  const completeCandidates = countCompleteCandidateRows(db, runId);
+  if (completeCandidates !== expectedCandidates) {
+    throw new Error(
+      `candidate run incomplete: ${completeCandidates}/${expectedCandidates} candidate rows complete`,
+    );
+  }
+
+  const outRun =
+    flags.outRun ?? `${runId}-codex-question-paired-b${config.judge.batchSize}`;
+  const judgeSummary = await runCodexRejudge(
+    codexArgsFromConfig({
+      config: candidateConfig,
+      sourceRun: runId,
+      outRun,
+      resume: flags.resume ?? true,
+      models: flags.models,
+    }),
+  );
+  const compareOut = flags.compareOut ?? path.join('logs', `${outRun}-comparison.json`);
+  const compareRows = listRunModelResults(db, outRun);
+  const comparison = buildPairedComparisonReport({
+    runId: outRun,
+    rows: compareRows,
+    baselineSuffix: 'direct',
+    comparisonSuffix: 'agent-bm25-research',
+  });
+  fs.mkdirSync(path.dirname(path.resolve(process.cwd(), compareOut)), {
+    recursive: true,
+  });
+  fs.writeFileSync(
+    path.resolve(process.cwd(), compareOut),
+    JSON.stringify(comparison, null, 2),
+  );
+  const result = {
+    candidateRunId: runId,
+    judgeRunId: outRun,
+    summary: judgeSummary,
+    reportPath: path.resolve(process.cwd(), compareOut),
+  };
+  if (flags.json) {
+    console.log(JSON.stringify(result));
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
 async function diffCommand(
   this: CliContext,
   flags: DiffFlags,
@@ -893,6 +1303,124 @@ const root = buildRouteMap({
       },
       func: reportCommand,
     }),
+    judge: buildCommand<JudgeFlags, [], CliContext>({
+      docs: { brief: 'Score completed candidate rows with configured Codex judge' },
+      parameters: {
+        flags: {
+          config: { kind: 'parsed', brief: 'Path to apocbench.yml', parse: (s) => s },
+          sourceRun: {
+            kind: 'parsed',
+            brief: 'Candidate source run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          'source-run': {
+            kind: 'parsed',
+            brief: 'Candidate source run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          outRun: {
+            kind: 'parsed',
+            brief: 'Destination scored run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          'out-run': {
+            kind: 'parsed',
+            brief: 'Destination scored run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          resume: { kind: 'boolean', brief: 'Resume existing judge run', optional: true },
+          json: { kind: 'boolean', brief: 'Emit compact JSON summary', optional: true },
+          limit: {
+            kind: 'parsed',
+            brief: 'Limit selected source rows',
+            optional: true,
+            parse: numberParser,
+          },
+          models: {
+            kind: 'parsed',
+            brief: 'Comma-separated source model ids',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+        },
+        aliases: {
+          c: 'config',
+        },
+      },
+      func: judgeCommand,
+    }),
+    'run-and-judge': buildCommand<RunAndJudgeFlags, [runId: string], CliContext>({
+      docs: { brief: 'Run candidate-only benchmark, Codex-judge it, and compare' },
+      parameters: {
+        flags: {
+          config: { kind: 'parsed', brief: 'Path to apocbench.yml', parse: (s) => s },
+          dryRun: {
+            kind: 'boolean',
+            brief: 'Validate only (no API calls)',
+            optional: true,
+          },
+          quiet: { kind: 'boolean', brief: 'Suppress TUI output', optional: true },
+          json: { kind: 'boolean', brief: 'Emit JSON output', optional: true },
+          resume: {
+            kind: 'boolean',
+            brief: 'Resume candidate and judge runs',
+            optional: true,
+          },
+          outRun: {
+            kind: 'parsed',
+            brief: 'Destination scored run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          compareOut: {
+            kind: 'parsed',
+            brief: 'Comparison JSON output path',
+            optional: true,
+            parse: (s) => s,
+          },
+          limit: {
+            kind: 'parsed',
+            brief: 'Limit questions',
+            optional: true,
+            parse: numberParser,
+          },
+          categories: {
+            kind: 'parsed',
+            brief: 'Comma-separated categories',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+          questions: {
+            kind: 'parsed',
+            brief: 'Comma-separated question ids',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+          models: {
+            kind: 'parsed',
+            brief: 'Comma-separated model ids',
+            optional: true,
+            variadic: ',',
+            parse: (s) => s,
+          },
+        },
+        aliases: { c: 'config' },
+        positional: {
+          kind: 'tuple',
+          parameters: [
+            { brief: 'Candidate run id', parse: (s) => s, placeholder: 'runId' },
+          ],
+        },
+      },
+      func: runAndJudgeCommand,
+    }),
     exportMd: buildCommand<ExportMdFlags, [runId: string], CliContext>({
       docs: { brief: 'Export run to LLM-friendly Markdown pack' },
       parameters: {
@@ -953,6 +1481,97 @@ const root = buildRouteMap({
         },
       },
       func: diffCommand,
+    }),
+    compare: buildCommand<CompareFlags, [runId?: string], CliContext>({
+      docs: { brief: 'Generate paired direct-vs-retrieval comparison report' },
+      parameters: {
+        flags: {
+          run: {
+            kind: 'parsed',
+            brief: 'Scored run id',
+            optional: true,
+            parse: (s) => s,
+          },
+          baselineRun: {
+            kind: 'parsed',
+            brief: 'Scored run id containing baseline rows',
+            optional: true,
+            parse: (s) => s,
+          },
+          'baseline-run': {
+            kind: 'parsed',
+            brief: 'Scored run id containing baseline rows',
+            optional: true,
+            parse: (s) => s,
+          },
+          comparisonRun: {
+            kind: 'parsed',
+            brief: 'Scored run id containing comparison rows',
+            optional: true,
+            parse: (s) => s,
+          },
+          'comparison-run': {
+            kind: 'parsed',
+            brief: 'Scored run id containing comparison rows',
+            optional: true,
+            parse: (s) => s,
+          },
+          outDir: {
+            kind: 'parsed',
+            brief: 'Output directory containing apocbench.sqlite',
+            optional: true,
+            parse: (s) => s,
+          },
+          'out-dir': {
+            kind: 'parsed',
+            brief: 'Output directory containing apocbench.sqlite',
+            optional: true,
+            parse: (s) => s,
+          },
+          baselineSuffix: {
+            kind: 'parsed',
+            brief: 'Baseline model id suffix',
+            optional: true,
+            parse: (s) => s,
+          },
+          'baseline-suffix': {
+            kind: 'parsed',
+            brief: 'Baseline model id suffix',
+            optional: true,
+            parse: (s) => s,
+          },
+          comparisonSuffix: {
+            kind: 'parsed',
+            brief: 'Comparison model id suffix',
+            optional: true,
+            parse: (s) => s,
+          },
+          'comparison-suffix': {
+            kind: 'parsed',
+            brief: 'Comparison model id suffix',
+            optional: true,
+            parse: (s) => s,
+          },
+          out: {
+            kind: 'parsed',
+            brief: 'Write JSON report to path',
+            optional: true,
+            parse: (s) => s,
+          },
+        },
+        positional: {
+          kind: 'tuple',
+          parameters: [
+            {
+              brief: 'Scored run id',
+              optional: true,
+              parse: (s) => s,
+              placeholder: 'runId',
+            },
+          ],
+        },
+      },
+      func: compareCommand,
     }),
     resume: buildCommand<ResumeFlags, [runId: string], CliContext>({
       docs: { brief: 'Resume a run by id (alias of run)' },

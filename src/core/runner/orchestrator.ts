@@ -4,8 +4,17 @@ import PQueue from 'p-queue';
 import type { LanguageModel } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 
-import type { ApocbenchConfig, CandidateMode } from '../config/schema';
-import { isWikiCandidateMode } from '../config/schema';
+import type {
+  ApocbenchConfig,
+  CandidateMode,
+  OpenRouterJudgeConfig,
+} from '../config/schema';
+import {
+  isCodexJudgeConfig,
+  isOpenRouterJudgeConfig,
+  isWikiCandidateMode,
+  toOpenRouterProviderParam,
+} from '../config/schema';
 import type { DatasetLine } from '../dataset/schema';
 import { buildCandidatePrompt } from '../prompts/candidatePrompt';
 import { buildJudgePrompt } from '../prompts/judgePrompt';
@@ -21,7 +30,7 @@ import { aggregateModel } from '../scoring/aggregate';
 import { computeOverallScore, judgeWithRubricCompletenessRetry } from './judge';
 import { makeRunId, promptTemplateHash } from './runId';
 import type { JudgeOutput } from './types';
-import { sha256FileHex } from '../../utils/hash';
+import { sha256FileHex, sha256Hex } from '../../utils/hash';
 import { redactSecrets } from '../../utils/redaction';
 import { writeJson } from '../../reports/json/exports';
 import { renderHtmlReport } from '../../reports/html/renderHtml';
@@ -36,7 +45,6 @@ import {
   updateRunStatusForRun,
   upsertRunResult,
 } from './persistence';
-import { toOpenRouterProviderParam } from '../config/schema';
 import {
   extractOpenRouterCost,
   initBudgetState,
@@ -136,6 +144,18 @@ type RunContext = {
 };
 
 type ModelEntry = ApocbenchConfig['models'][number];
+
+function deterministicQuestionShuffle(
+  questions: DatasetLine[],
+  seed: string,
+): DatasetLine[] {
+  return [...questions].sort((left, right) => {
+    const leftKey = sha256Hex(`${seed}\u0000${left.id}`);
+    const rightKey = sha256Hex(`${seed}\u0000${right.id}`);
+    return leftKey.localeCompare(rightKey) || left.id.localeCompare(right.id);
+  });
+}
+
 export function selectQuestions(params: {
   allQuestions: DatasetLine[];
   config: ApocbenchConfig;
@@ -162,6 +182,12 @@ export function selectQuestions(params: {
     const allowed = new Set(questionIds);
     questions = questions.filter((q) => allowed.has(q.id));
   }
+  if ((config.run.questionOrder ?? 'sequential') === 'shuffle') {
+    questions = deterministicQuestionShuffle(
+      questions,
+      config.run.questionSeed ?? config.run.name,
+    );
+  }
   if (questionLimit != null) {
     questions = questions.slice(0, questionLimit);
   }
@@ -180,7 +206,7 @@ function resolveModels(params: {
   );
 }
 
-function createQueues(params: { config: ApocbenchConfig; models: ModelEntry[] }): {
+export function createQueues(params: { config: ApocbenchConfig; models: ModelEntry[] }): {
   judgeQueue: PQueue;
   perModelQueue: Map<string, PQueue>;
 } {
@@ -191,7 +217,7 @@ function createQueues(params: { config: ApocbenchConfig; models: ModelEntry[] })
   for (const model of models) {
     perModelQueue.set(
       model.id,
-      new PQueue({ concurrency: config.run.concurrency.candidate }),
+      new PQueue({ concurrency: model.concurrency ?? config.run.concurrency.candidate }),
     );
   }
 
@@ -220,16 +246,24 @@ function redactReason(reason: string): string {
   return typeof redacted === 'string' ? redacted : String(redacted);
 }
 
+function requireOpenRouterJudgeConfig(config: ApocbenchConfig): OpenRouterJudgeConfig {
+  if (!isOpenRouterJudgeConfig(config.judge)) {
+    throw new Error('Inline judging requires judge.backend=openrouter');
+  }
+  return config.judge;
+}
+
 function buildJudgeProviderOptions(config: ApocbenchConfig): ProviderOptions {
+  const judgeConfig = requireOpenRouterJudgeConfig(config);
   return {
     openrouter: {
-      ...(config.judge.reasoning ? { reasoning: { enabled: true } } : {}),
-      ...(config.judge.routing
-        ? { provider: toOpenRouterProviderParam(config.judge.routing) }
-        : config.judge.provider
+      ...(judgeConfig.reasoning ? { reasoning: { enabled: true } } : {}),
+      ...(judgeConfig.routing
+        ? { provider: toOpenRouterProviderParam(judgeConfig.routing) }
+        : judgeConfig.provider
           ? {
               provider: {
-                order: [config.judge.provider],
+                order: [judgeConfig.provider],
                 allow_fallbacks: false,
               },
             }
@@ -261,6 +295,7 @@ async function handleJudgeQuestion(params: {
   if (!judgeModel) {
     throw new Error('judge model is unavailable in candidate-only mode');
   }
+  const judgeConfig = requireOpenRouterJudgeConfig(config);
   const budgetCheck = () => isBudgetExceeded({ state: budgetState, runId, onEvent });
 
   if (budgetCheck()) {
@@ -287,9 +322,9 @@ async function handleJudgeQuestion(params: {
           { role: 'system', content: JUDGE_SYSTEM_PROMPT },
           { role: 'user', content: judgePrompt },
         ] as TextMessages,
-        maxTokens: config.judge.maxTokens,
+        maxTokens: judgeConfig.maxTokens,
         timeoutMs: config.routers.openrouter.default.timeoutMs ?? null,
-        temperature: config.judge.temperature,
+        temperature: judgeConfig.temperature,
         providerOptions: buildJudgeProviderOptions(config),
         rubricIds,
       },
@@ -338,8 +373,8 @@ async function handleJudgeQuestion(params: {
     }
 
     const redactedRequest = redactSecrets({
-      model: config.judge.model,
-      provider: config.judge.provider,
+      model: judgeConfig.model,
+      provider: judgeConfig.provider,
     });
 
     db.transaction(() => {
@@ -793,12 +828,17 @@ function requiredWikiCapabilitiesForMode(mode: CandidateMode): WikiSearchMode[] 
     case 'rag-bm25':
     case 'agent-bm25':
     case 'agent-bm25-research':
+    case 'agent-bm25-research-v2':
+    case 'agent-bm25-rerank-research':
+    case 'agent-bm25-research-read-required':
+    case 'agent-bm25-research-smart-read':
       return ['bm25'];
     case 'rag-dense':
     case 'agent-dense':
       return ['dense'];
     case 'rag-hybrid':
     case 'agent-hybrid':
+    case 'agent-hybrid-research-smart-read':
       return ['hybrid'];
     case 'agent-wiki':
       return ['bm25', 'dense', 'hybrid', 'literal'];
@@ -987,6 +1027,11 @@ export async function runBenchmark(params: {
   insertRunQuestions(db, runId, questions);
 
   const candidateOnly = config.run.candidateOnly === true;
+  if (!candidateOnly && isCodexJudgeConfig(config.judge)) {
+    throw new Error(
+      'judge.backend=codex-cli requires run.candidateOnly=true and a separate Codex judge stage',
+    );
+  }
   const judgeModel = candidateOnly ? null : deps.resolveJudgeModel(config);
   const models = resolveModels({ config, selectedModelIds });
   const needsWiki = models.some((model) =>
@@ -1032,6 +1077,21 @@ export async function runBenchmark(params: {
 
   const modelIds = models.map((m) => m.id);
   const summaries = computeModelSummaries({ db, runId, modelIds });
+  const judgeSummary = (() => {
+    if (candidateOnly) return { skipped: true, reason: 'candidateOnly' };
+    if (isOpenRouterJudgeConfig(config.judge)) {
+      return {
+        backend: 'openrouter',
+        model: config.judge.model,
+        provider: config.judge.provider,
+      };
+    }
+    return {
+      backend: config.judge.backend,
+      model: config.judge.model,
+      reasoning: config.judge.reasoning,
+    };
+  })();
 
   const summary = {
     runId,
@@ -1039,9 +1099,7 @@ export async function runBenchmark(params: {
     datasetPath: datasetAbsolutePath,
     datasetSha256: datasetSha,
     promptTemplateHash: templateHash,
-    judge: candidateOnly
-      ? { skipped: true, reason: 'candidateOnly' }
-      : { model: config.judge.model, provider: config.judge.provider },
+    judge: judgeSummary,
     models: summaries,
   };
 

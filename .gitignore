@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 node_modules
 dashboard/.next
 dashboard/node_modules
@@ -8,8 +10,12 @@ dist/
 .DS_Store
 __pycache__/
 *.pyc
+*.log
+*.sqlite
+*.sqlite-*
+*.db
 *.gguf
-tmp
+tmp/
 target/
 data/wiki/
 indexes/

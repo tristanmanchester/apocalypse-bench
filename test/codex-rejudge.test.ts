@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { describe, expect, test } from 'vitest';
 
 import type { DatasetLine } from '../src/core/dataset/schema';
@@ -6,10 +10,15 @@ import {
   buildBatchPrompt,
   buildJudgeBatches,
   outputSchemaForBatch,
+  parseCodexRejudgeArgs,
+  setupRun,
   validateBatchOutput,
   type JudgeCase,
   type SourceResultRow,
-} from '../scripts/codex_rejudge';
+} from '../src/core/judge/codex';
+import { closeDb } from '../src/storage/sqlite/db';
+import { openAndMigrate } from '../src/storage/sqlite/migrate';
+import { insertRun } from '../src/storage/sqlite/runs';
 
 function question(id: string, category: string): DatasetLine {
   return {
@@ -74,6 +83,15 @@ function outputItem(
 }
 
 describe('codex rejudge batching', () => {
+  test('parser accepts positive Codex batch concurrency', () => {
+    const args = parseCodexRejudgeArgs(['--source-run', 'source', '--concurrency', '5']);
+
+    expect(args.concurrency).toBe(5);
+    expect(() =>
+      parseCodexRejudgeArgs(['--source-run', 'source', '--concurrency', '0']),
+    ).toThrow(/concurrency must be a positive integer/);
+  });
+
   test('sequential preserves current ordering and batch behavior', () => {
     const cases = [
       judgeCase('Q3', 'Medicine', 'dense'),
@@ -187,6 +205,48 @@ describe('codex rejudge batching', () => {
       ['Medicine', 'direct', ['MED-001']],
     ]);
   });
+
+  test('question-paired groups one question per batch and pairs direct before bm25 research', () => {
+    const cases = [
+      judgeCase('Q2', 'Medicine', 'gemma-agent-bm25-research'),
+      judgeCase('Q1', 'Engineering', 'gemma-agent-bm25-research'),
+      judgeCase('Q1', 'Engineering', 'gemma-direct'),
+      judgeCase('Q2', 'Medicine', 'gemma-direct'),
+    ];
+
+    const batches = buildJudgeBatches(cases, 10, 'question-paired');
+
+    expect(batches).toHaveLength(2);
+    expect(
+      batches.map((batch) => batch.cases.map((item) => item.row.question_id)),
+    ).toEqual([
+      ['Q1', 'Q1'],
+      ['Q2', 'Q2'],
+    ]);
+    expect(batches[0].cases.map((item) => item.row.model_id)).toEqual([
+      'gemma-direct',
+      'gemma-agent-bm25-research',
+    ]);
+  });
+
+  test('question-paired splits large same-question batches without mixing questions', () => {
+    const cases = Array.from({ length: 18 }, (_, index) =>
+      judgeCase(
+        'Q1',
+        'Engineering',
+        `model-${String(index).padStart(2, '0')}-${index % 2 === 0 ? 'direct' : 'agent-bm25-research'}`,
+      ),
+    );
+
+    const batches = buildJudgeBatches(cases, 10, 'question-paired');
+
+    expect(batches.map((batch) => batch.cases.length)).toEqual([10, 8]);
+    for (const batch of batches) {
+      expect(new Set(batch.cases.map((item) => item.row.question_id))).toEqual(
+        new Set(['Q1']),
+      );
+    }
+  });
 });
 
 describe('codex rejudge prompt and schema', () => {
@@ -212,6 +272,25 @@ describe('codex rejudge prompt and schema', () => {
     expect(prompt).toContain('Do not rank answers against each other');
     expect(prompt).toContain(
       'The top-level "results" array must contain one result for every case',
+    );
+  });
+
+  test('question-paired prompt describes paired calibration without fact sharing', () => {
+    const batch = buildJudgeBatches(
+      [
+        judgeCase('ENG-001', 'Engineering', 'gemma-direct'),
+        judgeCase('ENG-001', 'Engineering', 'gemma-agent-bm25-research'),
+      ],
+      10,
+      'question-paired',
+    )[0];
+
+    const prompt = buildBatchPrompt(batch);
+
+    expect(prompt).toContain('question-paired for question "ENG-001"');
+    expect(prompt).toContain('direct and retrieval candidates for the same task');
+    expect(prompt).toContain(
+      'Do not use facts, wording, or missing details from one candidate answer',
     );
   });
 
@@ -267,5 +346,55 @@ describe('codex rejudge prompt and schema', () => {
         ],
       }),
     ).toThrow(/non-array unsafe_flags/);
+  });
+});
+
+describe('codex rejudge run setup', () => {
+  test('resume seeds newly selected questions before later result writes', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'apocbench-codex-'));
+    const dbPath = path.join(tempDir, 'apocbench.sqlite');
+
+    closeDb();
+    const db = openAndMigrate(dbPath);
+
+    try {
+      insertRun(db, {
+        run_id: 'source-run',
+        created_at: new Date().toISOString(),
+        tool_version: 'test',
+        config_json: '{}',
+        dataset_path: 'data/question_bank',
+        dataset_sha256: 'source-sha',
+        prompt_template_hash: 'prompt-sha',
+        status: 'done',
+      });
+
+      const args = parseCodexRejudgeArgs([
+        '--source-run',
+        'source-run',
+        '--out-run',
+        'judge-run',
+      ]);
+
+      setupRun(db, args, 'judge-run', [question('Q1', 'Engineering')]);
+
+      const firstCount = db
+        .prepare('select count(*) as count from questions where run_id = ?')
+        .get('judge-run') as { count: number };
+      expect(firstCount.count).toBe(1);
+
+      setupRun(db, { ...args, resume: true }, 'judge-run', [
+        question('Q1', 'Engineering'),
+        question('Q2', 'Medicine'),
+      ]);
+
+      const secondCount = db
+        .prepare('select count(*) as count from questions where run_id = ?')
+        .get('judge-run') as { count: number };
+      expect(secondCount.count).toBe(2);
+    } finally {
+      closeDb();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

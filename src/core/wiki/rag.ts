@@ -37,6 +37,7 @@ export type RetrievalTrace = {
           score?: number;
           bm25Score?: number;
           denseScore?: number;
+          rerankScore?: number;
           sources?: string[];
         }>;
       };
@@ -169,6 +170,10 @@ async function runSearch(params: {
     case 'rag-bm25':
     case 'agent-bm25':
     case 'agent-bm25-research':
+    case 'agent-bm25-research-v2':
+    case 'agent-bm25-rerank-research':
+    case 'agent-bm25-research-read-required':
+    case 'agent-bm25-research-smart-read':
       return params.client.search(request);
     case 'rag-dense':
     case 'agent-dense':
@@ -178,6 +183,7 @@ async function runSearch(params: {
       return params.client.literalSearch(request);
     case 'rag-hybrid':
     case 'agent-hybrid':
+    case 'agent-hybrid-research-smart-read':
     case 'agent-wiki':
       return params.client.hybridSearch(request);
     case 'direct':

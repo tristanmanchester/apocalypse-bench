@@ -36,7 +36,7 @@ routers:
     baseUrl: 'https://openrouter.ai/api/v1'
     apiKeyEnv: 'OPENROUTER_API_KEY'
     headers:
-      HTTP-Referer: 'https://github.com/yourname/apocalypse-bench'
+      HTTP-Referer: 'https://github.com/tristanmanchester/apocalypse-bench'
       X-Title: 'apocalypse-bench'
     default:
       temperature: 0.5

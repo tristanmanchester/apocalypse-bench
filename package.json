@@ -1,8 +1,7 @@
 {
   "name": "apocalypse-bench",
   "version": "1.0.0",
-  "description": "apocbench: offline survival/apocalypse LLM benchmark runner",
-  "private": true,
+  "description": "Offline survival-assistant benchmark runner for LLMs",
   "type": "module",
   "bin": {
     "apocbench": "dist/cli/index.js"
@@ -16,9 +15,9 @@
     "wiki:embed:test": "python3 -m unittest scripts/wiki_embed_test.py",
     "wiki:ingest:fixture": "cargo run -p wiki-search -- ingest --input crates/wiki-search/tests/fixtures/wiki-mini.jsonl --out data/wiki/fixture",
     "wiki:serve:fixture": "cargo run -p wiki-search -- serve --index data/wiki/fixture",
-    "rejudge:codex": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx scripts/codex_rejudge.ts",
-    "retrieval-debug:config": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx scripts/make_retrieval_debug_config.ts",
-    "retrieval-debug:report": "PATH=/Users/tristan/.local/share/fnm/node-versions/v24.11.1/installation/bin:$PATH tsx scripts/retrieval_debug_report.ts",
+    "rejudge:codex": "tsx scripts/codex_rejudge.ts",
+    "retrieval-debug:config": "tsx scripts/make_retrieval_debug_config.ts",
+    "retrieval-debug:report": "tsx scripts/retrieval_debug_report.ts",
     "dataset:export": "tsx src/cli/exportDataset.ts",
     "dev": "tsx src/cli/index.tsx",
     "lint": "eslint src test",
@@ -27,9 +26,24 @@
     "test": "scripts/check-no-next-artifacts.sh && vitest",
     "verify:install": "pnpm install --frozen-lockfile"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "llm",
+    "benchmark",
+    "evaluation",
+    "survival",
+    "retrieval",
+    "wikipedia"
+  ],
+  "author": "Tristan Manchester",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tristanmanchester/apocalypse-bench.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tristanmanchester/apocalypse-bench/issues"
+  },
+  "homepage": "https://github.com/tristanmanchester/apocalypse-bench#readme",
   "engines": {
     "node": ">=20"
   },
@@ -41,6 +55,7 @@
     "@earendil-works/pi-ai": "0.75.4",
     "@openrouter/ai-sdk-provider": "^1.5.4",
     "@stricli/core": "^1.2.4",
+    "@tobilu/qmd": "2.5.3",
     "ai": "^5.0.116",
     "better-sqlite3": "^12.5.0",
     "dotenv": "^17.2.3",

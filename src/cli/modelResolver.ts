@@ -3,7 +3,7 @@ import type { LanguageModel } from 'ai';
 import { createOpenAICompatibleClient } from '../adapters/openaiCompatible/client';
 import { createOpenRouterClient } from '../adapters/openrouter/client';
 import { createOllamaClient } from '../adapters/ollama/client';
-import type { ApocbenchConfig } from '../core/config/schema';
+import { isOpenRouterJudgeConfig, type ApocbenchConfig } from '../core/config/schema';
 
 type Env = NodeJS.ProcessEnv;
 type CandidateModelEntry = ApocbenchConfig['models'][number];
@@ -60,6 +60,9 @@ export function resolveJudgeModel(
   config: ApocbenchConfig,
   env: Env = process.env,
 ): LanguageModel {
+  if (!isOpenRouterJudgeConfig(config.judge)) {
+    throw new Error('Codex judge configs are scored with the batched judge command');
+  }
   const apiKey = requireEnv(env, config.routers.openrouter.apiKeyEnv);
   const openrouter = createOpenRouterClient({
     apiKey,

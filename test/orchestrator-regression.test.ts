@@ -5,7 +5,11 @@ import path from 'node:path';
 import type { ApocbenchConfig } from '../src/core/config/schema';
 import type { DatasetLine } from '../src/core/dataset/schema';
 import type { JudgeOutput } from '../src/core/runner/types';
-import { runBenchmark, selectQuestions } from '../src/core/runner/orchestrator';
+import {
+  createQueues,
+  runBenchmark,
+  selectQuestions,
+} from '../src/core/runner/orchestrator';
 import { generateText, type LanguageModel } from 'ai';
 import { judgeWithRubricCompletenessRetry } from '../src/core/runner/judge';
 
@@ -305,6 +309,31 @@ afterEach(async () => {
   store.questions.clear();
   vi.unstubAllGlobals();
   fs.rmSync(RUNS_ROOT, { recursive: true, force: true });
+});
+
+test('createQueues uses model concurrency override when present', () => {
+  const config = makeConfig({ outDir: './runs' });
+  config.run.concurrency.candidate = 20;
+  config.models = [
+    {
+      id: 'normal',
+      router: 'openrouter',
+      model: 'normal-model',
+      candidateMode: 'direct',
+    },
+    {
+      id: 'free-lane',
+      router: 'openrouter',
+      model: 'free-model',
+      candidateMode: 'direct',
+      concurrency: 1,
+    },
+  ];
+
+  const { perModelQueue } = createQueues({ config, models: config.models });
+
+  expect(perModelQueue.get('normal')?.concurrency).toBe(20);
+  expect(perModelQueue.get('free-lane')?.concurrency).toBe(1);
 });
 
 describe('runBenchmark regression coverage', () => {
@@ -801,6 +830,63 @@ describe('runBenchmark regression coverage', () => {
       questionIdsOverride: ['Q2', 'Q4', 'Q5'],
     });
     expect(overrideSelected.map((q) => q.id)).toEqual(['Q2', 'Q4', 'Q5']);
+  });
+
+  test('question selection shuffles deterministically before applying limits', () => {
+    const config = makeConfig({ outDir: path.join(RUNS_ROOT, 'selection-shuffle') });
+    config.run.questionLimit = 5;
+    config.run.questionOrder = 'shuffle';
+    config.run.questionSeed = 'seed-a';
+    const questions = [
+      ...makeQuestions(10).map((question) => ({
+        ...question,
+        category: 'Agriculture',
+      })),
+      ...makeQuestions(10).map((question, index) => ({
+        ...question,
+        id: `M${index + 1}`,
+        category: 'Medicine',
+      })),
+    ];
+
+    const first = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    const second = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+
+    expect(second.map((question) => question.id)).toEqual(
+      first.map((question) => question.id),
+    );
+    expect(first.map((question) => question.id)).not.toEqual([
+      'Q1',
+      'Q2',
+      'Q3',
+      'Q4',
+      'Q5',
+    ]);
+    expect(new Set(first.map((question) => question.category)).size).toBeGreaterThan(1);
+
+    config.run.questionSeed = 'seed-b';
+    const differentSeed = selectQuestions({
+      allQuestions: questions,
+      config,
+      limitOverride: null,
+      categoriesOverride: null,
+      questionIdsOverride: null,
+    });
+    expect(differentSeed.map((question) => question.id)).not.toEqual(
+      first.map((question) => question.id),
+    );
   });
 
   test('tool-intent non-answers are auto-failed before judging', async () => {

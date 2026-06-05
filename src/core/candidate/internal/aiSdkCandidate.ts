@@ -154,7 +154,7 @@ export async function executeAiSdkCandidate(params: {
 
   return {
     prompt: effectivePrompt,
-    completion: result.text,
+    completion: normalizeCandidateCompletion(result.text, modelEntry),
     retrievalTrace,
     generationId: extractOpenRouterGenerationId(result) ?? undefined,
     metrics: {
@@ -290,6 +290,7 @@ function buildCandidateProviderOptions(
   config: ApocbenchConfig,
   modelEntry: ModelEntry,
 ): ProviderOptions | undefined {
+  const openRouterReasoning = toOpenRouterReasoningParam(config);
   return (modelEntry.router === 'openrouter'
     ? {
         openrouter: {
@@ -303,6 +304,7 @@ function buildCandidateProviderOptions(
                   },
                 }
               : {}),
+          ...(openRouterReasoning ? { reasoning: openRouterReasoning } : {}),
         },
       }
     : modelEntry.router === 'ollama'
@@ -318,6 +320,32 @@ function buildCandidateProviderOptions(
           },
         }
       : undefined) as ProviderOptions | undefined;
+}
+
+function toOpenRouterReasoningParam(
+  config: ApocbenchConfig,
+): Record<string, unknown> | undefined {
+  const reasoning = config.candidate?.reasoning;
+  if (!reasoning?.enabled) return undefined;
+  if (reasoning.maxTokens != null) {
+    return {
+      max_tokens: reasoning.maxTokens,
+      exclude: reasoning.exclude,
+    };
+  }
+  if (reasoning.effort) {
+    return {
+      effort: toOpenRouterReasoningEffort(reasoning.effort),
+      exclude: reasoning.exclude,
+    };
+  }
+  return undefined;
+}
+
+function toOpenRouterReasoningEffort(effort: string): 'low' | 'medium' | 'high' {
+  if (effort === 'minimal' || effort === 'low') return 'low';
+  if (effort === 'xhigh' || effort === 'high') return 'high';
+  return 'medium';
 }
 
 function getCandidateRouterDefaults(
@@ -367,4 +395,13 @@ function extractOpenRouterGenerationId(result: unknown): string | null {
     return providerMetadataId;
 
   return null;
+}
+
+function normalizeCandidateCompletion(text: string, modelEntry: ModelEntry): string {
+  if (modelEntry.router !== 'ollama') return text;
+  return stripLeadingThinkBlock(text);
+}
+
+function stripLeadingThinkBlock(text: string): string {
+  return text.replace(/^\s*<think>[\s\S]*?<\/think>\s*/i, '').trimStart();
 }

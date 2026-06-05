@@ -7,7 +7,8 @@ storage, search, embeddings, and tool traces.
 
 ## Corpus
 
-The primary corpus is `marin-community/wikipedia-markdown` from Hugging Face. Materialize it to JSONL:
+The primary corpus is `marin-community/wikipedia-markdown` from Hugging Face.
+Materialize it to JSONL:
 
 ```bash
 uv run --with datasets scripts/wiki_download.py --out data/wiki/wikipedia-markdown.jsonl
@@ -92,7 +93,8 @@ WIKI_DENSE_MANIFEST=data/wiki/full/dense_manifest.json \
 cargo run -p wiki-search -- serve --index data/wiki/full --listen 127.0.0.1:8765
 ```
 
-If these variables are absent, BM25 and literal search still work, and dense/hybrid calls fail clearly.
+If these variables are absent, BM25 and literal search still work, and
+dense/hybrid calls fail clearly.
 
 ## Benchmark config
 
@@ -103,7 +105,10 @@ Use `candidateMode` per model:
 - `rag-dense`: pre-retrieve with dense search
 - `rag-hybrid`: pre-retrieve with hybrid search
 - `agent-wiki`: production bounded tool-loop mode with all wiki tools exposed
-- `agent-bm25`, `agent-bm25-research`, `agent-dense`, `agent-hybrid`, `agent-rg`, `agent-literal`: ablation modes with one mode-specific search tool and `wiki_read`
+- `agent-bm25`, `agent-bm25-research`, `agent-bm25-research-v2`,
+  `agent-bm25-rerank-research`, `agent-dense`, `agent-hybrid`, `agent-rg`,
+  `agent-literal`: ablation modes with one mode-specific search tool and
+  `wiki_read`
 
 Agent modes use `@earendil-works/pi-agent-core` with Pi tools backed by the
 local wiki service. The harness enforces `wiki.limits.maxToolCalls` and
@@ -113,8 +118,8 @@ access.
 The Pi agent uses a benchmark-owned text tool-call protocol instead of sending
 OpenRouter's native `tools` request parameter. Models request tools by emitting
 `<tool_call>{"name":"wiki_search","arguments":{"query":"...","topK":5}}</tool_call>`
-or `wiki_read` with a `chunkId`; the harness parses that text into Pi tool calls,
-executes the wiki tool, and returns the result as text. This keeps agent
+or `wiki_read` with a `chunkId`; the harness parses that text into Pi tool
+calls, executes the wiki tool, and returns the result as text. This keeps agent
 conditions comparable for models whose providers do not advertise native
 OpenRouter tool support but whose model training still includes tool use.
 
@@ -137,10 +142,14 @@ model-native formats used by the current nine-model matrix:
 
 The production `agent-wiki` mode exposes:
 
-- `wiki_hybrid_search`: default broad discovery tool using BM25 plus dense retrieval
-- `wiki_search`: BM25 search for exact terminology, article names, materials, hazards, or symptoms
-- `wiki_semantic_search`: dense semantic signpost search for concepts and synonyms
-- `wiki_literal_search`: scoped exact phrase search inside a known `articleId` or `chunkId`
+- `wiki_hybrid_search`: default broad discovery tool using BM25 plus dense
+  retrieval
+- `wiki_search`: BM25 search for exact terminology, article names, materials,
+  hazards, or symptoms
+- `wiki_semantic_search`: dense semantic signpost search for concepts and
+  synonyms
+- `wiki_literal_search`: scoped exact phrase search inside a known `articleId`
+  or `chunkId`
 - `wiki_read`: bounded source hydration by `chunkId`
 
 The single-tool agent modes are intentionally narrower controls:
@@ -155,6 +164,11 @@ variants in one tool call, dedupes the hits, and annotates each hit with the
 queries that matched it. Use it to test whether broader lexical query planning
 helps before promoting a tool shape to the production `agent-wiki` surface.
 
+`agent-bm25-research-v2` keeps BM25 retrieval but gives the model a stronger
+system prompt about lexical search failure modes. `agent-bm25-rerank-research`
+adds a local QMD reranker after BM25 candidate retrieval. Treat both as research
+conditions until they have enough judged rows to justify promoting them.
+
 `wiki.enabled` is the feature flag. If no wiki mode is configured, the benchmark
 uses the current direct no-tools path. If a model uses a wiki `candidateMode`,
 `wiki.enabled` must not be `false`.
@@ -163,13 +177,83 @@ uses the current direct no-tools path. If a model uses a wiki `candidateMode`,
 direct, BM25/dense/hybrid RAG, BM25/dense/hybrid single-tool Pi-agent
 conditions, and the production `agent-wiki` condition. It is candidate-only by
 default: the runner stores completed answers and skips the configured placeholder
-judge. Score completed rows with `scripts/codex_rejudge.ts`.
+judge. Score completed rows with `pnpm -s dev judge` or
+`pnpm -s rejudge:codex`.
 
 Replace its manifest ids after building your local index, then run a small smoke:
 
 ```bash
 pnpm dev validate -c apocbench-wiki.yml
 pnpm dev run -c apocbench-wiki.yml --limit 2
+```
+
+## Codex judging
+
+Codex is a first-class asynchronous judge backend for candidate-only runs. The
+runner generates candidate answers, stores them as `candidate_done`, and a
+separate Codex stage writes a normal scored run with `done` rows. This keeps
+candidate generation separate from Codex scoring and avoids calling an inline
+judge while candidates are still running.
+
+The official direct-vs-retrieval comparison config is
+`apocbench-direct-vs-bm25-research.yml`. It covers all 500 questions, the exact
+nine open-source model set, and only two conditions: `direct` and
+`agent-bm25-research`. It excludes `gpt-5-nano`. The expected candidate count is
+`500 * 9 * 2 = 9000`. It also uses `run.questionOrder=shuffle` with a fixed
+`run.questionSeed`, so early progress and `--limit` smokes are representative
+across categories instead of walking the JSONL files in category order.
+
+Validate the config and candidate count without writing scored rows:
+
+```bash
+pnpm -s dev validate -c apocbench-direct-vs-bm25-research.yml --quiet
+pnpm -s dev run-and-judge -c apocbench-direct-vs-bm25-research.yml --dry-run --json <candidate-run-id>
+```
+
+Run candidate generation, Codex rejudging, and paired comparison in one command:
+
+```bash
+pnpm -s dev run-and-judge -c apocbench-direct-vs-bm25-research.yml <candidate-run-id> --resume
+```
+
+The integrated command uses the config's Codex settings: `backend=codex-cli`,
+`model=gpt-5.5`, low reasoning, batch size 10, and `question-paired` batching.
+Question-paired batches group direct and `agent-bm25-research` answers for the
+same question so the judge can calibrate rubric interpretation while the prompt
+explicitly forbids sharing facts or credit across candidate answers.
+
+There are two independent concurrency controls:
+
+- `run.concurrency.candidate`: per-model-entry candidate concurrency. Because
+  the full config has 18 model entries, a value of 20 means each non-overridden
+  entry may run up to 20 candidate tasks concurrently.
+- `models[].concurrency`: optional per-entry override for throttled providers.
+  The full config uses this to keep both LFM free-model lanes at concurrency 1.
+- `judge.concurrency`: concurrent Codex batch processes during asynchronous
+  rejudging. Codex output/log files remain per batch, and SQLite writes are
+  still coordinated by the parent process.
+
+Manual recovery is still available as two explicit stages:
+
+```bash
+pnpm -s dev run -c apocbench-direct-vs-bm25-research.yml <candidate-run-id>
+
+pnpm -s dev judge -c apocbench-direct-vs-bm25-research.yml \
+  --source-run <candidate-run-id> \
+  --out-run <candidate-run-id>-codex-question-paired-b10 \
+  --resume
+
+pnpm -s dev compare \
+  --run <candidate-run-id>-codex-question-paired-b10 \
+  --baseline-suffix direct \
+  --comparison-suffix agent-bm25-research \
+  --out logs/<candidate-run-id>-comparison.json
+```
+
+The old standalone wrapper remains for ad hoc rejudging:
+
+```bash
+pnpm -s rejudge:codex -- --source-run <candidate-run-id> --source-status both
 ```
 
 ## Reports
@@ -208,7 +292,7 @@ configured judge. Score the completed candidate rows with Codex:
 pnpm -s rejudge:codex -- \
   --source-run <candidate-run-id> \
   --out-run <candidate-run-id>-codex-question-b10 \
-  --codex-bin /home/tristan/.local/bin/codex \
+  --codex-bin codex \
   --model gpt-5.5 \
   --reasoning low \
   --batch-size 10 \

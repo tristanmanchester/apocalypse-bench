@@ -8,6 +8,32 @@ const requestDefaultsSchema = z
   })
   .strict();
 
+const candidateReasoningSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+    maxTokens: z.number().int().positive().optional(),
+    exclude: z.boolean().default(true),
+  })
+  .strict()
+  .superRefine((reasoning, ctx) => {
+    if (!reasoning.enabled) return;
+    if (!reasoning.effort && !reasoning.maxTokens) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'candidate.reasoning requires effort or maxTokens when enabled.',
+        path: ['effort'],
+      });
+    }
+    if (reasoning.effort && reasoning.maxTokens) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Provide only one of candidate.reasoning.effort or maxTokens.',
+        path: ['maxTokens'],
+      });
+    }
+  });
+
 const retryPolicySchema = z
   .object({
     maxRetries: z.number().int().nonnegative().optional(),
@@ -50,6 +76,57 @@ const openRouterRoutingSchema = z
   })
   .strict();
 
+const codexBatchStrategySchema = z.enum([
+  'sequential',
+  'model',
+  'category',
+  'category-model',
+  'question-paired',
+]);
+
+const codexSourceStatusSchema = z.enum(['done', 'candidate_done', 'both']);
+
+const openRouterJudgeSchema = z
+  .object({
+    backend: z.literal('openrouter').optional(),
+    router: z.literal('openrouter'),
+    model: z.string().min(1),
+    provider: z.string().min(1).optional(),
+    temperature: z.number().nullable().optional(),
+    maxTokens: z.number().int().positive(),
+    structured: z.boolean(),
+    reasoning: z.boolean().optional(),
+    routing: openRouterRoutingSchema.optional(),
+  })
+  .strict()
+  .transform((judge) => ({ ...judge, backend: judge.backend ?? 'openrouter' }) as const);
+
+const codexJudgeSchema = z
+  .object({
+    backend: z.literal('codex-cli'),
+    model: z.string().min(1).default('gpt-5.5'),
+    reasoning: z.string().min(1).default('low'),
+    codexBin: z.string().min(1).default('codex'),
+    batchSize: z.number().int().positive().default(10),
+    batchStrategy: codexBatchStrategySchema.default('question-paired'),
+    concurrency: z.number().int().positive().default(1),
+    sourceStatus: codexSourceStatusSchema.default('both'),
+    maxRetries: z.number().int().nonnegative().default(1),
+    tmpDir: z.string().min(1).default('logs/codex-rejudge'),
+    disableFeatures: z
+      .array(z.string().min(1))
+      .default([
+        'plugins',
+        'apps',
+        'memories',
+        'tool_suggest',
+        'skill_mcp_dependency_install',
+      ]),
+  })
+  .strict();
+
+const judgeSchema = z.union([openRouterJudgeSchema, codexJudgeSchema]);
+
 const candidateModeSchema = z
   .enum([
     'direct',
@@ -58,6 +135,11 @@ const candidateModeSchema = z
     'rag-hybrid',
     'agent-bm25',
     'agent-bm25-research',
+    'agent-bm25-research-v2',
+    'agent-bm25-rerank-research',
+    'agent-bm25-research-read-required',
+    'agent-bm25-research-smart-read',
+    'agent-hybrid-research-smart-read',
     'agent-dense',
     'agent-hybrid',
     'agent-wiki',
@@ -139,6 +221,8 @@ export const configSchema = z
         outDir: z.string().min(1),
         resume: z.boolean(),
         questionLimit: z.number().int().positive().nullable().optional(),
+        questionOrder: z.enum(['sequential', 'shuffle']).default('sequential'),
+        questionSeed: z.string().min(1).optional(),
         categories: z.array(z.string().min(1)).nullable().optional(),
         questionIds: z.array(z.string().min(1)).nullable().optional(),
         candidateOnly: z.boolean().optional(),
@@ -174,22 +258,12 @@ export const configSchema = z
     candidate: z
       .object({
         maxTokens: z.number().int().positive().optional(),
+        reasoning: candidateReasoningSchema.optional(),
       })
       .strict()
       .optional(),
 
-    judge: z
-      .object({
-        router: z.literal('openrouter'),
-        model: z.string().min(1),
-        provider: z.string().min(1).optional(),
-        temperature: z.number().nullable().optional(),
-        maxTokens: z.number().int().positive(),
-        structured: z.boolean(),
-        reasoning: z.boolean().optional(),
-        routing: openRouterRoutingSchema.optional(),
-      })
-      .strict(),
+    judge: judgeSchema,
 
     routers: z
       .object({
@@ -226,6 +300,7 @@ export const configSchema = z
             params: requestDefaultsSchema.optional(),
             promptFormat: z.string().min(1).optional(),
             routing: openRouterRoutingSchema.optional(),
+            concurrency: z.number().int().positive().optional(),
           })
           .strict(),
       )
@@ -265,5 +340,22 @@ export const configSchema = z
   .strict();
 
 export type ApocbenchConfig = z.input<typeof configSchema>;
+export type ParsedApocbenchConfig = z.infer<typeof configSchema>;
 export type CandidateMode = z.infer<typeof candidateModeSchema>;
 export type WikiConfig = z.infer<typeof wikiConfigSchema>;
+export type CodexJudgeConfig = z.infer<typeof codexJudgeSchema>;
+export type OpenRouterJudgeConfig = z.infer<typeof openRouterJudgeSchema>;
+
+export function isCodexJudgeConfig(
+  judge: ApocbenchConfig['judge'],
+): judge is CodexJudgeConfig {
+  return judge.backend === 'codex-cli';
+}
+
+export function isOpenRouterJudgeConfig(
+  judge: ApocbenchConfig['judge'],
+): judge is OpenRouterJudgeConfig {
+  return (
+    judge.backend === 'openrouter' || ('router' in judge && judge.router === 'openrouter')
+  );
+}

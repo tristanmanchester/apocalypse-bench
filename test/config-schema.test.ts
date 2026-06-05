@@ -62,6 +62,146 @@ describe('config schema', () => {
       maxMs: 60000,
       maxTotalTimeMs: null,
     });
+    expect(result.data.judge.backend).toBe('openrouter');
+  });
+
+  test('accepts deterministic question shuffle settings', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        questionOrder: 'shuffle',
+        questionSeed: 'smoke-v1',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.run.questionOrder).toBe('shuffle');
+    expect(result.data.run.questionSeed).toBe('smoke-v1');
+  });
+
+  test('rejects invalid question order', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        questionOrder: 'randomish',
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('accepts codex judge backend with defaults', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        candidateOnly: true,
+      },
+      judge: {
+        backend: 'codex-cli',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.judge).toMatchObject({
+      backend: 'codex-cli',
+      model: 'gpt-5.5',
+      reasoning: 'low',
+      codexBin: 'codex',
+      batchSize: 10,
+      batchStrategy: 'question-paired',
+      concurrency: 1,
+      sourceStatus: 'both',
+      maxRetries: 1,
+    });
+  });
+
+  test('accepts codex judge concurrency and per-model candidate concurrency', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        candidateOnly: true,
+      },
+      judge: {
+        backend: 'codex-cli',
+        concurrency: 5,
+      },
+      models: [
+        {
+          id: 'm1',
+          router: 'ollama',
+          model: 'llama3.2',
+          concurrency: 2,
+        },
+      ],
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.judge.backend).toBe('codex-cli');
+    if (result.data.judge.backend !== 'codex-cli') return;
+    expect(result.data.judge.concurrency).toBe(5);
+    expect(result.data.models[0]?.concurrency).toBe(2);
+  });
+
+  test('rejects unknown codex judge keys', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        candidateOnly: true,
+      },
+      judge: {
+        backend: 'codex-cli',
+        extra: true,
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects invalid codex batch strategy', () => {
+    const result = configSchema.safeParse({
+      ...baseConfig,
+      run: {
+        ...baseConfig.run,
+        candidateOnly: true,
+      },
+      judge: {
+        backend: 'codex-cli',
+        batchStrategy: 'not-a-strategy',
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  test('rejects invalid concurrency values', () => {
+    expect(
+      configSchema.safeParse({
+        ...baseConfig,
+        run: {
+          ...baseConfig.run,
+          candidateOnly: true,
+        },
+        judge: {
+          backend: 'codex-cli',
+          concurrency: 0,
+        },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      configSchema.safeParse({
+        ...baseConfig,
+        models: [{ id: 'm1', router: 'ollama', model: 'llama3.2', concurrency: 0 }],
+      }).success,
+    ).toBe(false);
   });
 
   test('accepts openai-compatible candidate router with no auth', () => {

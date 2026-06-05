@@ -96,7 +96,19 @@ describe('wiki config schema', () => {
           id: 'm1-agent',
           router: 'ollama',
           model: 'llama3.2',
-          candidateMode: 'agent-bm25-research',
+          candidateMode: 'agent-bm25-research-read-required',
+        },
+        {
+          id: 'm1-smart-bm25',
+          router: 'ollama',
+          model: 'llama3.2',
+          candidateMode: 'agent-bm25-research-smart-read',
+        },
+        {
+          id: 'm1-smart-hybrid',
+          router: 'ollama',
+          model: 'llama3.2',
+          candidateMode: 'agent-hybrid-research-smart-read',
         },
       ],
     });
@@ -106,7 +118,9 @@ describe('wiki config schema', () => {
     expect(result.data.wiki).toEqual(wiki);
     expect(result.data.models.map((model) => model.candidateMode)).toEqual([
       'direct',
-      'agent-bm25-research',
+      'agent-bm25-research-read-required',
+      'agent-bm25-research-smart-read',
+      'agent-hybrid-research-smart-read',
     ]);
   });
 

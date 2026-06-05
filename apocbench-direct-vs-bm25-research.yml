@@ -1,0 +1,162 @@
+run:
+  name: 'direct-vs-bm25-research'
+  datasetPaths:
+    - './data/question_bank'
+  outDir: './runs'
+  resume: true
+  candidateOnly: true
+  questionLimit: null
+  questionOrder: 'shuffle'
+  questionSeed: 'direct-vs-bm25-research-20260603-v1'
+  categories: null
+  maxBudgetUsd: null
+  retry:
+    maxRetries: 3
+    baseMs: 2000
+    maxMs: 30000
+    maxTotalTimeMs: 300000
+  concurrency:
+    candidate: 20
+    judge: 1
+
+candidate:
+  maxTokens: 4000
+
+judge:
+  backend: 'codex-cli'
+  model: 'gpt-5.5'
+  reasoning: 'low'
+  codexBin: 'codex'
+  batchSize: 10
+  batchStrategy: 'question-paired'
+  concurrency: 5
+  sourceStatus: 'both'
+  maxRetries: 1
+  tmpDir: 'logs/codex-rejudge'
+  disableFeatures:
+    - plugins
+    - apps
+    - memories
+    - tool_suggest
+    - skill_mcp_dependency_install
+
+routers:
+  ollama:
+    baseUrl: 'http://localhost:11434/api'
+    apiKeyEnv: null
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 180000
+  openrouter:
+    baseUrl: 'https://openrouter.ai/api/v1'
+    apiKeyEnv: 'OPENROUTER_API_KEY'
+    headers:
+      HTTP-Referer: 'https://github.com/tristanmanchester/apocalypse-bench'
+      X-Title: 'apocalypse-bench'
+    default:
+      temperature: 0.5
+      maxTokens: 4000
+      timeoutMs: 180000
+
+wiki:
+  enabled: true
+  service:
+    baseUrl: 'http://127.0.0.1:8765'
+    timeoutMs: 10000
+  corpus:
+    manifestId: '03873037ca5d577c9142d313ea437762828033188d2f06bbb58e5bb3704a1789'
+    manifestPath: './data/wiki/full/manifest.json'
+  index:
+    manifestId: '03873037ca5d577c9142d313ea437762828033188d2f06bbb58e5bb3704a1789'
+    manifestPath: './data/wiki/full/manifest.json'
+  limits:
+    searchTopK: 5
+    readMaxChars: 4000
+    contextMaxChars: 12000
+    maxToolCalls: 8
+    maxTurns: 6
+
+models:
+  - &lfm25_model
+    id: 'lfm2.5-1.2b-thinking-direct'
+    router: 'openrouter'
+    model: 'liquid/lfm-2.5-1.2b-thinking:free'
+    candidateMode: 'direct'
+    concurrency: 1
+  - <<: *lfm25_model
+    id: 'lfm2.5-1.2b-thinking-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+    concurrency: 1
+
+  - &gemma26_model
+    id: 'gemma-4-26b-a4b-it-direct'
+    router: 'openrouter'
+    model: 'google/gemma-4-26b-a4b-it'
+    candidateMode: 'direct'
+  - <<: *gemma26_model
+    id: 'gemma-4-26b-a4b-it-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &gemma31_model
+    id: 'gemma-4-31b-it-direct'
+    router: 'openrouter'
+    model: 'google/gemma-4-31b-it'
+    candidateMode: 'direct'
+  - <<: *gemma31_model
+    id: 'gemma-4-31b-it-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &granite41_model
+    id: 'granite-4.1-8b-direct'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.1-8b'
+    candidateMode: 'direct'
+  - <<: *granite41_model
+    id: 'granite-4.1-8b-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-direct'
+    router: 'openrouter'
+    model: 'nvidia/nemotron-3-nano-30b-a3b'
+    candidateMode: 'direct'
+  - <<: *nemotron3_model
+    id: 'nemotron-3-nano-30b-a3b-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &trinity_model
+    id: 'trinity-mini-direct'
+    router: 'openrouter'
+    model: 'arcee-ai/trinity-mini'
+    candidateMode: 'direct'
+  - <<: *trinity_model
+    id: 'trinity-mini-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &granite40_model
+    id: 'granite-4.0-h-micro-direct'
+    router: 'openrouter'
+    model: 'ibm-granite/granite-4.0-h-micro'
+    candidateMode: 'direct'
+  - <<: *granite40_model
+    id: 'granite-4.0-h-micro-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &phi4_model
+    id: 'phi-4-mini-instruct-direct'
+    router: 'openrouter'
+    model: 'microsoft/phi-4-mini-instruct'
+    candidateMode: 'direct'
+  - <<: *phi4_model
+    id: 'phi-4-mini-instruct-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
+
+  - &gptoss20_model
+    id: 'gpt-oss-20b-direct'
+    router: 'openrouter'
+    model: 'openai/gpt-oss-20b'
+    candidateMode: 'direct'
+  - <<: *gptoss20_model
+    id: 'gpt-oss-20b-agent-bm25-research'
+    candidateMode: 'agent-bm25-research'
