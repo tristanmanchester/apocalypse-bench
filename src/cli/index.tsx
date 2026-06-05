@@ -849,18 +849,51 @@ async function judgeCommand(this: CliContext, flags: JudgeFlags): Promise<void> 
 function countCompleteCandidateRows(
   db: ReturnType<typeof openAndMigrate>,
   runId: string,
+  modelIds?: readonly string[],
 ): number {
+  const params: unknown[] = [runId];
+  let modelFilter = '';
+  if (modelIds && modelIds.length > 0) {
+    modelFilter = `and model_id in (${modelIds.map(() => '?').join(',')})`;
+    params.push(...modelIds);
+  }
+
   const row = db
     .prepare(
       `select count(*) as count
        from model_results
        where run_id = ?
+         ${modelFilter}
          and status in ('candidate_done', 'done')
          and candidate_completion is not null
          and length(trim(candidate_completion)) > 0`,
     )
-    .get(runId) as { count: number };
+    .get(...params) as { count: number };
   return row.count;
+}
+
+export function selectedModelIdsForRunAndJudge(
+  config: ApocbenchConfig,
+  requestedModelIds?: readonly string[],
+): string[] {
+  if (!requestedModelIds || requestedModelIds.length === 0) {
+    return config.models.map((model) => model.id);
+  }
+  const requested = new Set(requestedModelIds);
+  return config.models
+    .filter((model) => requested.has(model.id))
+    .map((model) => model.id);
+}
+
+export function expectedCandidateCountForRunAndJudge(params: {
+  config: ApocbenchConfig;
+  questionCount: number;
+  requestedModelIds?: readonly string[];
+}): number {
+  return (
+    params.questionCount *
+    selectedModelIdsForRunAndJudge(params.config, params.requestedModelIds).length
+  );
 }
 
 function stripModelSuffix(modelId: string, suffix: string): string | null {
@@ -1006,8 +1039,7 @@ async function compareCommand(
 ): Promise<void> {
   const resolvedRunId = flags.run ?? runId;
   const baselineRunId = flags.baselineRun ?? flags['baseline-run'] ?? resolvedRunId;
-  const comparisonRunId =
-    flags.comparisonRun ?? flags['comparison-run'] ?? resolvedRunId;
+  const comparisonRunId = flags.comparisonRun ?? flags['comparison-run'] ?? resolvedRunId;
   if (!baselineRunId || !comparisonRunId) {
     die(
       'missing scored run id (pass positional runId/--run, or both --baseline-run and --comparison-run)',
@@ -1073,14 +1105,18 @@ async function runAndJudgeCommand(
     const dataset = candidateConfig.run.datasetPaths
       ? loadJsonlMany(candidateConfig.run.datasetPaths)
       : loadJsonl(candidateConfig.run.datasetPath!);
-    const expectedCandidates =
-      selectQuestions({
-        allQuestions: dataset.lines,
-        config: candidateConfig,
-        limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
-        categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
-        questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
-      }).length * candidateConfig.models.length;
+    const selectedQuestionCount = selectQuestions({
+      allQuestions: dataset.lines,
+      config: candidateConfig,
+      limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
+      categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+      questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
+    }).length;
+    const expectedCandidates = expectedCandidateCountForRunAndJudge({
+      config: candidateConfig,
+      questionCount: selectedQuestionCount,
+      requestedModelIds: flags.models,
+    });
     const result = {
       candidateRunId: runId,
       dryRun: true,
@@ -1101,18 +1137,23 @@ async function runAndJudgeCommand(
   const dataset = candidateConfig.run.datasetPaths
     ? loadJsonlMany(candidateConfig.run.datasetPaths)
     : loadJsonl(candidateConfig.run.datasetPath!);
-  const expectedCandidates =
-    selectQuestions({
-      allQuestions: dataset.lines,
-      config: candidateConfig,
-      limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
-      categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
-      questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
-    }).length * candidateConfig.models.length;
+  const selectedQuestionCount = selectQuestions({
+    allQuestions: dataset.lines,
+    config: candidateConfig,
+    limitOverride: typeof flags.limit === 'number' ? flags.limit : null,
+    categoriesOverride: flags.categories ? Array.from(flags.categories) : null,
+    questionIdsOverride: flags.questions ? Array.from(flags.questions) : null,
+  }).length;
+  const selectedModelIds = selectedModelIdsForRunAndJudge(candidateConfig, flags.models);
+  const expectedCandidates = expectedCandidateCountForRunAndJudge({
+    config: candidateConfig,
+    questionCount: selectedQuestionCount,
+    requestedModelIds: flags.models,
+  });
   const db = openAndMigrate(
     path.resolve(process.cwd(), candidateConfig.run.outDir, 'apocbench.sqlite'),
   );
-  const completeCandidates = countCompleteCandidateRows(db, runId);
+  const completeCandidates = countCompleteCandidateRows(db, runId, selectedModelIds);
   if (completeCandidates !== expectedCandidates) {
     throw new Error(
       `candidate run incomplete: ${completeCandidates}/${expectedCandidates} candidate rows complete`,
