@@ -31,7 +31,7 @@ The exporter writes a deterministic folder (default is `runs/<runId>/markdown/`)
 - `--mode <by-domain|by-model|both>`: choose output grouping (default: `both`).
 - `--include-cases`: include `cases/<caseId>.md` (default: true).
 - `--overwrite`: replace existing output directory (default: false).
-- `--redact <none|basic>`: MVP supports `none` only.
+- `--redact <none|basic>`: only `none` is currently supported.
 
 ## Common issues
 

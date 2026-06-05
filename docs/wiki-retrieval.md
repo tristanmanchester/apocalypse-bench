@@ -2,8 +2,8 @@
 
 The wiki track keeps the original no-tools benchmark intact and adds local
 Wikipedia retrieval conditions. Candidate models still run through the
-configured model router, usually OpenRouter; the local machine owns only corpus
-storage, search, embeddings, and tool traces.
+configured model router, usually OpenRouter; the local machine handles only
+corpus storage, search, embeddings, and tool traces.
 
 ## Corpus
 
@@ -46,9 +46,9 @@ pnpm wiki:serve:fixture
 Dense search uses a manifest-driven Sentence Transformers embedding pipeline.
 The default remains `Snowflake/snowflake-arctic-embed-s`, but the build and
 serve commands can use any compatible model, dimension, prompt name, truncation,
-and float precision recorded in the dense manifest. The Qdrant collection is
-created with on-disk vector storage plus TurboQuant 4-bit quantization so the
-signpost index fits the laptop better than raw in-memory float vectors.
+and float precision recorded in the dense manifest. The Qdrant collection uses
+on-disk vector storage and TurboQuant 4-bit quantization to keep the index small
+enough to run on a laptop.
 
 Start Qdrant separately, then build dense signposts from all article leads plus
 deterministic practical/survival section matches and optional benchmark-question
@@ -120,11 +120,14 @@ OpenRouter's native `tools` request parameter. Models request tools by emitting
 `<tool_call>{"name":"wiki_search","arguments":{"query":"...","topK":5}}</tool_call>`
 or `wiki_read` with a `chunkId`; the harness parses that text into Pi tool
 calls, executes the wiki tool, and returns the result as text. This keeps agent
-conditions comparable for models whose providers do not advertise native
-OpenRouter tool support but whose model training still includes tool use.
+conditions comparable across models, even when a provider does not advertise
+native tool support on OpenRouter.
 
-The neutral XML+JSON form is preferred, but the parser also accepts documented
-model-native formats used by the current nine-model matrix:
+The neutral XML+JSON form is preferred. The parser also accepts the model-native
+formats used by the current nine-model matrix:
+
+<details>
+<summary>Model-native tool-call formats</summary>
 
 - Liquid LFM2.5: `<|tool_call_start|>` / `<|tool_call_end|>` with JSON or
   Pythonic calls such as `[wiki_search(query='water purification', topK=5)]`
@@ -139,6 +142,8 @@ model-native formats used by the current nine-model matrix:
 - Arcee Trinity and generic structured-output paths: raw JSON, OpenAI
   Chat/Responses JSON (`tool_calls`, `function_call`, `function`, `output`
   items), and Anthropic-style `tool_use` content blocks
+
+</details>
 
 The production `agent-wiki` mode exposes:
 
@@ -189,7 +194,7 @@ pnpm dev run -c apocbench-wiki.yml --limit 2
 
 ## Codex judging
 
-Codex is a first-class asynchronous judge backend for candidate-only runs. The
+Codex is a supported asynchronous judge backend for candidate-only runs. The
 runner generates candidate answers, stores them as `candidate_done`, and a
 separate Codex stage writes a normal scored run with `done` rows. This keeps
 candidate generation separate from Codex scoring and avoids calling an inline
@@ -222,7 +227,7 @@ Question-paired batches group direct and `agent-bm25-research` answers for the
 same question so the judge can calibrate rubric interpretation while the prompt
 explicitly forbids sharing facts or credit across candidate answers.
 
-There are two independent concurrency controls:
+Concurrency is controlled in three places:
 
 - `run.concurrency.candidate`: per-model-entry candidate concurrency. Because
   the full config has 18 model entries, a value of 20 means each non-overridden

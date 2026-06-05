@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Apocalypse Bench dashboard
 
-## Getting Started
+A local [Next.js](https://nextjs.org) app for browsing `apocbench` run outputs.
+It lists completed runs and, for each one, shows score breakdowns by model,
+category, and difficulty, with charts.
 
-First, run the development server:
+The dashboard reads the run artifacts written by the main `apocbench` CLI. By
+default it looks for them in `../runs` (the `runs/` directory at the repository
+root). Set the `RUNS_DIR` environment variable to read from another location.
+
+## Requirements
+
+- A completed `apocbench` run under `runs/`. See the [root README](../README.md)
+  for how to produce one.
+- Node.js 20 or newer and pnpm 10 or newer.
+
+## Run the dashboard
+
+From the `dashboard/` directory:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). The home page redirects to
+`/runs`, which lists every run found under the runs directory. Select a run to
+see its model, category, and difficulty breakdowns.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+To read runs from a custom location, set `RUNS_DIR`:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+RUNS_DIR=/path/to/runs pnpm dev
+```
 
-## Learn More
+## Build for production
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+pnpm build
+pnpm start
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Checks
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+pnpm lint
+pnpm test
+```
