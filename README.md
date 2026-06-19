@@ -26,7 +26,7 @@ local BM25, dense, hybrid, RAG, and bounded agent-style retrieval. See
 - A separate dashboard app under `dashboard/` for exploring run outputs.
 
 The full writeup is here:
-[Apocalypse Bench](https://www.crowlabs.tech/blog/apocalypse-bench).
+[Apocalypse Bench](https://www.linkedin.com/pulse/upcoming-apocalypse-which-small-llm-help-us-rebuild-manchester-dq08f).
 
 ## Requirements
 
